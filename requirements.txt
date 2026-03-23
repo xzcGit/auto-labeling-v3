@@ -1,0 +1,4 @@
+PyQt5>=5.15
+pyqtgraph>=0.13
+ultralytics==8.2.69
+pyyaml>=6.0
