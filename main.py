@@ -1,10 +1,18 @@
-"""AutoLabel V3 — Entry point."""
+"""AutoLabel V3 — entry point."""
 import sys
 
+from PyQt5.QtWidgets import QApplication
 
-def main():
-    print("AutoLabel V3 — not yet implemented")
-    return 0
+from src.app import MainWindow
+from src.ui.theme import apply_theme
+
+
+def main() -> int:
+    app = QApplication(sys.argv)
+    apply_theme(app)
+    window = MainWindow()
+    window.show()
+    return app.exec_()
 
 
 if __name__ == "__main__":
