@@ -32,3 +32,14 @@ def sample_project_config():
         "created_at": "2026-03-23T10:00:00",
         "version": "1.0",
     }
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """Provide a QApplication instance for the entire test session."""
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    yield app
