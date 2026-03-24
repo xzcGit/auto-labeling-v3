@@ -21,6 +21,7 @@ from PyQt5.QtCore import Qt
 
 from src.core.config import AppConfig
 from src.core.project import ProjectManager
+from src.ui.label_panel import LabelPanel
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ class MainWindow(QMainWindow):
 
         # State
         self._project: ProjectManager | None = None
+        self._label_panel: LabelPanel | None = None
 
         # Central widget
         self.tab_widget = QTabWidget()
@@ -145,6 +147,13 @@ class MainWindow(QMainWindow):
         self._app_config.add_recent_project(str(project_manager.project_dir))
         self._app_config.save(self._config_path)
 
+        # Create or update label panel
+        if self._label_panel is None:
+            self._label_panel = LabelPanel(config_path=self._config_path)
+            self.tab_widget.addTab(self._label_panel, "标注")
+        self._label_panel.set_project(project_manager)
+        self.tab_widget.setCurrentWidget(self._label_panel)
+
         self._status_label.setText(
             f"项目: {project_manager.config.name} | "
             f"图片: {len(project_manager.list_images())} | "
@@ -179,7 +188,9 @@ class MainWindow(QMainWindow):
             logger.error("Failed to open recent project: %s", e)
 
     def closeEvent(self, event) -> None:
-        """Save config on close."""
+        """Save config and annotations on close."""
+        if self._label_panel:
+            self._label_panel.save_and_cleanup()
         geo = self.geometry()
         self._app_config.window_geometry = {
             "x": geo.x(), "y": geo.y(),
