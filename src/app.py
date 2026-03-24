@@ -16,12 +16,19 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QFileDialog,
     QAction,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt
 
 from src.core.config import AppConfig
 from src.core.project import ProjectManager
 from src.ui.label_panel import LabelPanel
+from src.ui.train_panel import TrainPanel
+from src.ui.model_panel import ModelPanel
+from src.ui.dialogs import NewProjectDialog, ExportDialog, ClassManagerDialog
+from src.engine.model_manager import ModelRegistry
+from src.engine.dataset import DatasetPreparer
+from src.utils.workers import TrainWorker
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +106,10 @@ class MainWindow(QMainWindow):
         # State
         self._project: ProjectManager | None = None
         self._label_panel: LabelPanel | None = None
+        self._train_panel: TrainPanel | None = None
+        self._model_panel: ModelPanel | None = None
+        self._model_registry: ModelRegistry | None = None
+        self._train_worker: TrainWorker | None = None
 
         # Central widget
         self.tab_widget = QTabWidget()
@@ -134,9 +145,22 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        export_action = QAction("导出...", self)
+        export_action.triggered.connect(self._on_export)
+        file_menu.addAction(export_action)
+
+        file_menu.addSeparator()
+
         exit_action = QAction("退出", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        # Edit menu
+        edit_menu = mb.addMenu("编辑")
+
+        classes_action = QAction("类别管理...", self)
+        classes_action.triggered.connect(self._on_class_manager)
+        edit_menu.addAction(classes_action)
 
     def open_project(self, project_manager: ProjectManager) -> None:
         """Open a project and switch to labeling workspace."""
@@ -147,11 +171,27 @@ class MainWindow(QMainWindow):
         self._app_config.add_recent_project(str(project_manager.project_dir))
         self._app_config.save(self._config_path)
 
-        # Create or update label panel
+        # Model registry
+        self._model_registry = ModelRegistry(project_manager.project_dir / "models")
+        self._model_registry.load()
+
+        # Create or update panels
         if self._label_panel is None:
             self._label_panel = LabelPanel(config_path=self._config_path)
             self.tab_widget.addTab(self._label_panel, "标注")
         self._label_panel.set_project(project_manager)
+
+        if self._train_panel is None:
+            self._train_panel = TrainPanel()
+            self._train_panel._btn_start.clicked.connect(self._on_start_training)
+            self._train_panel.stop_requested.connect(self._on_stop_training)
+            self.tab_widget.addTab(self._train_panel, "训练")
+
+        if self._model_panel is None:
+            self._model_panel = ModelPanel()
+            self.tab_widget.addTab(self._model_panel, "模型")
+        self._model_panel.set_models(self._model_registry.list_models())
+
         self.tab_widget.setCurrentWidget(self._label_panel)
 
         self._status_label.setText(
@@ -162,8 +202,17 @@ class MainWindow(QMainWindow):
 
     def _on_new_project(self) -> None:
         """Handle new project creation."""
-        # Placeholder — will be connected to NewProjectDialog in Plan 5
-        pass
+        dlg = NewProjectDialog(self)
+        if dlg.exec_():
+            name, proj_dir, classes = dlg.get_values()
+            if not name or not proj_dir:
+                return
+            try:
+                pm = ProjectManager.create(proj_dir, name, classes=classes or None)
+                self.open_project(pm)
+            except Exception as e:
+                logger.error("Failed to create project: %s", e)
+                QMessageBox.warning(self, "错误", f"创建项目失败: {e}")
 
     def _on_open_project(self) -> None:
         """Handle open project via file dialog."""
@@ -186,6 +235,117 @@ class MainWindow(QMainWindow):
             self.open_project(pm)
         except Exception as e:
             logger.error("Failed to open recent project: %s", e)
+
+    def _on_export(self) -> None:
+        """Handle export dialog."""
+        if not self._project:
+            return
+        dlg = ExportDialog(self)
+        if dlg.exec_():
+            fmt, out_dir, only_confirmed = dlg.get_values()
+            if not out_dir:
+                return
+            try:
+                from src.core.label_io import load_annotation
+                annotations = []
+                for img_path in self._project.list_images():
+                    label_path = self._project.label_path_for(img_path)
+                    ia = load_annotation(label_path)
+                    if ia:
+                        annotations.append(ia)
+
+                if fmt == "YOLO":
+                    from src.core.formats.yolo import export_yolo_detection
+                    export_yolo_detection(annotations, out_dir, self._project.config.classes, only_confirmed)
+                elif fmt == "COCO":
+                    from src.core.formats.coco import export_coco
+                    export_coco(annotations, Path(out_dir) / "coco.json", self._project.config.classes, only_confirmed)
+                elif fmt == "labelme":
+                    from src.core.formats.labelme import export_labelme
+                    export_labelme(annotations, out_dir, only_confirmed)
+
+                self._status_label.setText(f"导出完成: {fmt} → {out_dir}")
+            except Exception as e:
+                logger.error("Export failed: %s", e)
+                QMessageBox.warning(self, "导出失败", str(e))
+
+    def _on_class_manager(self) -> None:
+        """Handle class management dialog."""
+        if not self._project:
+            return
+        dlg = ClassManagerDialog(
+            self._project.config.classes,
+            self._project.config.class_colors,
+            self,
+        )
+        if dlg.exec_():
+            self._project.config.classes = dlg.get_classes()
+            self._project.save()
+            if self._label_panel:
+                self._label_panel.set_project(self._project)
+
+    def _on_start_training(self) -> None:
+        """Start a training run."""
+        if not self._project or not self._train_panel:
+            return
+        try:
+            # Save current annotations first
+            if self._label_panel:
+                self._label_panel.save_and_cleanup()
+
+            # Prepare dataset
+            preparer = DatasetPreparer(self._project)
+            task = self._train_panel._task_combo.currentText()
+            val_ratio = self._train_panel.get_val_ratio()
+            output_dir = self._project.project_dir / "datasets" / "current"
+            data_yaml = preparer.prepare(output_dir, task=task, val_ratio=val_ratio)
+
+            # Build config
+            config = self._train_panel.get_train_config(
+                data_yaml=str(data_yaml),
+                model=self._train_panel._model_combo.currentText(),
+            )
+            config.project = str(self._project.project_dir / "models")
+            config.name = f"{task}-train"
+
+            # Launch worker
+            self._train_worker = TrainWorker(config)
+            self._train_worker.epoch_update.connect(self._train_panel.update_epoch)
+            self._train_worker.finished_ok.connect(self._on_training_finished)
+            self._train_worker.error.connect(self._train_panel.on_training_error)
+            self._train_worker.start()
+
+            self._train_panel.append_log(f"开始训练: {task} | {config.model} | {config.epochs} epochs")
+        except Exception as e:
+            logger.error("Failed to start training: %s", e)
+            self._train_panel.on_training_error(str(e))
+
+    def _on_stop_training(self) -> None:
+        """Stop the current training run."""
+        if self._train_worker and self._train_worker.isRunning():
+            self._train_worker.terminate()
+            self._train_panel.append_log("训练已停止")
+
+    def _on_training_finished(self, metrics: dict) -> None:
+        """Handle training completion."""
+        if self._train_panel:
+            self._train_panel.on_training_finished(metrics)
+        # Register model
+        if self._model_registry and self._project:
+            from src.engine.model_manager import ModelInfo
+            task = self._train_panel._task_combo.currentText() if self._train_panel else "detect"
+            model_info = ModelInfo(
+                name=f"{task}-{len(self._model_registry.list_models()) + 1}",
+                path=f"models/{task}-train/weights/best.pt",
+                task=task,
+                base_model=self._train_panel._model_combo.currentText() if self._train_panel else "yolov8n.pt",
+                classes=self._project.config.classes,
+                metrics=metrics,
+            )
+            self._model_registry.register(model_info)
+            self._model_registry.save()
+            if self._model_panel:
+                self._model_panel.set_models(self._model_registry.list_models())
 
     def closeEvent(self, event) -> None:
         """Save config and annotations on close."""
