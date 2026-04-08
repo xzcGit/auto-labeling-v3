@@ -14,11 +14,17 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QDoubleSpinBox,
+    QDialog,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
 
 from src.engine.model_manager import ModelInfo
+from src.ui.icons import icon
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +39,7 @@ class ModelPanel(QWidget):
 
     model_load_requested = pyqtSignal(str)
     model_delete_requested = pyqtSignal(str)
+    model_import_requested = pyqtSignal()  # Request to import external .pt file
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,15 +56,24 @@ class ModelPanel(QWidget):
         list_layout = QVBoxLayout(list_group)
 
         self._model_list = QListWidget()
+        self._model_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         list_layout.addWidget(self._model_list)
 
         btn_layout = QHBoxLayout()
-        self._btn_load = QPushButton("加载模型")
+        self._btn_load = QPushButton(icon("load_model"), "加载模型")
         self._btn_load.setStyleSheet("background-color: #a6e3a1; color: #1e1e2e;")
-        self._btn_delete = QPushButton("删除模型")
+        self._btn_load.setToolTip("加载选中模型用于自动标注")
+        self._btn_delete = QPushButton(icon("delete"), "删除模型")
         self._btn_delete.setStyleSheet("background-color: #f38ba8; color: #1e1e2e;")
+        self._btn_delete.setToolTip("从注册表中删除选中模型")
+        self._btn_import = QPushButton(icon("import"), "导入模型")
+        self._btn_import.setToolTip("从文件导入外部 .pt 模型")
+        self._btn_compare = QPushButton("对比模型")
+        self._btn_compare.setToolTip("对比选中模型的指标")
         btn_layout.addWidget(self._btn_load)
         btn_layout.addWidget(self._btn_delete)
+        btn_layout.addWidget(self._btn_import)
+        btn_layout.addWidget(self._btn_compare)
         list_layout.addLayout(btn_layout)
 
         layout.addWidget(list_group)
@@ -121,6 +137,8 @@ class ModelPanel(QWidget):
         self._model_list.currentRowChanged.connect(self._on_model_selected)
         self._btn_load.clicked.connect(self._on_load)
         self._btn_delete.clicked.connect(self._on_delete)
+        self._btn_import.clicked.connect(lambda: self.model_import_requested.emit())
+        self._btn_compare.clicked.connect(self._on_compare)
 
     def set_models(self, models: list[ModelInfo]) -> None:
         """Update the model list."""
@@ -137,6 +155,7 @@ class ModelPanel(QWidget):
             self._model_list.addItem(item)
 
         self._model_list.blockSignals(False)
+        logger.info("Model list updated: %d models", len(models))
 
     def set_current_model_name(self, name: str) -> None:
         """Display the currently loaded model name."""
@@ -174,3 +193,99 @@ class ModelPanel(QWidget):
         model_id = self._get_selected_id()
         if model_id:
             self.model_delete_requested.emit(model_id)
+
+    def _on_compare(self) -> None:
+        """Show comparison dialog for selected models."""
+        selected_ids = []
+        for item in self._model_list.selectedItems():
+            mid = item.data(Qt.UserRole)
+            if mid:
+                selected_ids.append(mid)
+        if len(selected_ids) < 2:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "提示", "请选择至少 2 个模型进行对比")
+            return
+        models = [m for m in self._models if m.id in selected_ids]
+        dlg = ModelCompareDialog(models, self)
+        dlg.exec_()
+
+
+class ModelCompareDialog(QDialog):
+    """Dialog showing a table comparison of model metrics."""
+
+    def __init__(self, models: list[ModelInfo], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"模型对比 ({len(models)} 个模型)")
+        self.setMinimumSize(600, 400)
+        self._models = models
+        self._init_ui()
+
+    def _init_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        # Collect all metric keys across all models
+        all_keys: list[str] = []
+        for m in self._models:
+            for k in m.metrics:
+                if k not in all_keys:
+                    all_keys.append(k)
+
+        # Fixed columns + metric columns
+        fixed_cols = ["名称", "任务", "基础模型", "Epochs", "数据集"]
+        headers = fixed_cols + all_keys
+        n_rows = len(self._models)
+        n_cols = len(headers)
+
+        table = QTableWidget(n_rows, n_cols)
+        table.setHorizontalHeaderLabels(headers)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+
+        for row, model in enumerate(self._models):
+            table.setItem(row, 0, QTableWidgetItem(model.name))
+            table.setItem(row, 1, QTableWidgetItem(model.task))
+            table.setItem(row, 2, QTableWidgetItem(model.base_model))
+            table.setItem(row, 3, QTableWidgetItem(str(model.epochs)))
+            table.setItem(row, 4, QTableWidgetItem(str(model.dataset_size)))
+
+            for ci, key in enumerate(all_keys):
+                val = model.metrics.get(key)
+                text = f"{val:.4f}" if val is not None else "-"
+                item = QTableWidgetItem(text)
+                # Highlight best value in each metric column
+                if val is not None:
+                    item.setTextAlignment(Qt.AlignCenter)
+                table.setItem(row, len(fixed_cols) + ci, item)
+
+        # Highlight best values per metric column
+        for ci, key in enumerate(all_keys):
+            col_idx = len(fixed_cols) + ci
+            values = []
+            for row in range(n_rows):
+                val = self._models[row].metrics.get(key)
+                values.append(val)
+            # Best = max for most metrics (mAP, precision, recall), min for loss
+            is_loss = "loss" in key.lower()
+            best_val = None
+            for v in values:
+                if v is not None:
+                    if best_val is None:
+                        best_val = v
+                    elif is_loss and v < best_val:
+                        best_val = v
+                    elif not is_loss and v > best_val:
+                        best_val = v
+            if best_val is not None:
+                for row in range(n_rows):
+                    if values[row] == best_val:
+                        item = table.item(row, col_idx)
+                        if item:
+                            item.setForeground(QColor("#a6e3a1"))
+
+        layout.addWidget(table)
+
+        # Summary
+        summary = QLabel(f"共 {len(self._models)} 个模型 | 绿色标记为各指标最优值")
+        summary.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        layout.addWidget(summary)

@@ -52,3 +52,41 @@ class TestModelPanel:
         panel = ModelPanel()
         assert panel._btn_load is not None
         assert panel._btn_delete is not None
+
+    def test_has_compare_button(self, qapp):
+        from src.ui.model_panel import ModelPanel
+
+        panel = ModelPanel()
+        assert panel._btn_compare is not None
+
+    def test_model_list_multi_select(self, qapp):
+        from src.ui.model_panel import ModelPanel
+        from PyQt5.QtWidgets import QAbstractItemView
+
+        panel = ModelPanel()
+        assert panel._model_list.selectionMode() == QAbstractItemView.ExtendedSelection
+
+
+class TestModelCompareDialog:
+    def test_creates_with_models(self, qapp):
+        from src.ui.model_panel import ModelCompareDialog
+        from src.engine.model_manager import ModelInfo
+
+        m1 = ModelInfo(name="v1", path="m1.pt", task="detect", base_model="yolov8n.pt",
+                       classes=["cat"], metrics={"mAP50": 0.85, "mAP50-95": 0.65}, epochs=100)
+        m2 = ModelInfo(name="v2", path="m2.pt", task="detect", base_model="yolov8s.pt",
+                       classes=["cat"], metrics={"mAP50": 0.90, "mAP50-95": 0.70}, epochs=200)
+        dlg = ModelCompareDialog([m1, m2])
+        assert dlg.windowTitle().startswith("模型对比")
+
+    def test_handles_missing_metrics(self, qapp):
+        from src.ui.model_panel import ModelCompareDialog
+        from src.engine.model_manager import ModelInfo
+
+        m1 = ModelInfo(name="v1", path="m1.pt", task="detect", base_model="yolov8n.pt",
+                       classes=["cat"], metrics={"mAP50": 0.85})
+        m2 = ModelInfo(name="v2", path="m2.pt", task="detect", base_model="yolov8s.pt",
+                       classes=["cat"], metrics={"recall": 0.9})
+        dlg = ModelCompareDialog([m1, m2])
+        # Should not crash with mismatched metric keys
+        assert dlg is not None

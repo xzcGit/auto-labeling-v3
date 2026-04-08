@@ -48,6 +48,7 @@ class TrainConfig:
     # Pose-specific
     pose: float = 12.0
     kobj: float = 1.0
+    kpt_shape: list[int] | None = None  # [num_keypoints, dim] e.g. [17, 3]
 
     # Output
     project: str = ""
@@ -94,7 +95,49 @@ class TrainConfig:
         if self.task == "pose":
             args["pose"] = self.pose
             args["kobj"] = self.kobj
+            if self.kpt_shape:
+                args["kpt_shape"] = self.kpt_shape
         return args
+
+
+# ── Training presets ───────────────────────────────────────────
+
+TRAIN_PRESETS: dict[str, dict] = {
+    "默认": {},  # Use TrainConfig defaults
+    "快速验证": {
+        "epochs": 10,
+        "batch": 32,
+        "imgsz": 320,
+        "lr0": 0.01,
+        "mosaic": 0.0,
+        "mixup": 0.0,
+        "scale": 0.0,
+        "fliplr": 0.0,
+    },
+    "标准训练": {
+        "epochs": 100,
+        "batch": 16,
+        "imgsz": 640,
+        "lr0": 0.01,
+        "mosaic": 1.0,
+        "fliplr": 0.5,
+        "scale": 0.5,
+    },
+    "高精度": {
+        "epochs": 300,
+        "batch": 8,
+        "imgsz": 640,
+        "lr0": 0.001,
+        "lrf": 0.001,
+        "mosaic": 1.0,
+        "mixup": 0.15,
+        "copy_paste": 0.1,
+        "fliplr": 0.5,
+        "scale": 0.9,
+        "translate": 0.2,
+        "degrees": 10.0,
+    },
+}
 
 
 class Trainer:
@@ -106,6 +149,16 @@ class Trainer:
             yolo_cls = YOLO
         self._yolo_cls = yolo_cls
         self._model = None
+        self._cancel_requested = False
+
+    def request_cancel(self) -> None:
+        """Request graceful cancellation of training."""
+        self._cancel_requested = True
+        logger.info("Training cancel requested")
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancel_requested
 
     def train(
         self,
@@ -113,10 +166,15 @@ class Trainer:
         on_epoch_end: Callable[[dict], None] | None = None,
     ) -> None:
         """Start training."""
+        logger.info("Starting training: model=%s, epochs=%d", config.model, config.epochs)
         self._model = self._yolo_cls(config.model)
 
-        if on_epoch_end:
-            def _epoch_callback(trainer_obj):
+        def _epoch_callback(trainer_obj):
+            if self._cancel_requested:
+                # Tell YOLO training is done — graceful stop
+                trainer_obj.epoch = trainer_obj.epochs
+                return
+            if on_epoch_end:
                 metrics = {}
                 if hasattr(trainer_obj, "metrics") and trainer_obj.metrics:
                     metrics = dict(trainer_obj.metrics)
@@ -125,7 +183,7 @@ class Trainer:
                 metrics["epoch"] = trainer_obj.epoch
                 on_epoch_end(metrics)
 
-            self._model.add_callback("on_fit_epoch_end", _epoch_callback)
+        self._model.add_callback("on_fit_epoch_end", _epoch_callback)
 
         train_args = config.to_train_args()
         self._model.train(**train_args)

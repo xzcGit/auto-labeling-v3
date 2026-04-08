@@ -69,6 +69,17 @@ QPushButton:hover {{
     background-color: {MOCHA['surface1']};
 }}
 
+QPushButton:checked {{
+    background-color: {MOCHA['blue']};
+    color: {MOCHA['crust']};
+    border-color: {MOCHA['blue']};
+}}
+
+QPushButton:checked:hover {{
+    background-color: {MOCHA['lavender']};
+    border-color: {MOCHA['lavender']};
+}}
+
 QPushButton:pressed {{
     background-color: {MOCHA['surface2']};
 }}

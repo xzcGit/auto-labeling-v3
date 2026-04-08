@@ -53,6 +53,7 @@ class Predictor:
             iou=iou,
             verbose=False,
         )
+        logger.debug("Predict: %s (conf=%.2f, iou=%.2f)", image_path, conf, iou)
         if not results:
             return [], (0, 0)
 
@@ -108,4 +109,5 @@ class Predictor:
                 source="auto",
             ))
 
+        logger.debug("Predict result: %d annotations", len(annotations))
         return annotations, img_size

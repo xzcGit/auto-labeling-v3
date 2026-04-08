@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import QThread, pyqtSignal, QMutex
 
 from src.core.annotation import Annotation
 from src.engine.trainer import TrainConfig, Trainer
@@ -18,25 +19,47 @@ class TrainWorker(QThread):
     Signals:
         epoch_update(dict): Emitted after each epoch with metrics dict.
         finished_ok(dict): Emitted on successful completion with best metrics.
+        cancelled(): Emitted when training is cancelled by user.
         error(str): Emitted if training fails with error message.
     """
 
     epoch_update = pyqtSignal(dict)
     finished_ok = pyqtSignal(dict)
+    cancelled = pyqtSignal()
     error = pyqtSignal(str)
 
     def __init__(self, config: TrainConfig, trainer_cls=None, parent=None):
         super().__init__(parent)
         self._config = config
         self._trainer_cls = trainer_cls or Trainer
+        self._trainer: Trainer | None = None
+        self._trainer_mutex = QMutex()
+
+    def cancel(self) -> None:
+        """Request graceful cancellation of training."""
+        self._trainer_mutex.lock()
+        try:
+            if self._trainer:
+                self._trainer.request_cancel()
+        finally:
+            self._trainer_mutex.unlock()
 
     def run(self) -> None:
         try:
             trainer = self._trainer_cls()
+            self._trainer_mutex.lock()
+            try:
+                self._trainer = trainer
+            finally:
+                self._trainer_mutex.unlock()
             trainer.train(self._config, on_epoch_end=self._on_epoch)
-            metrics = trainer.get_best_metrics()
-            self.finished_ok.emit(metrics)
+            if trainer.cancelled:
+                self.cancelled.emit()
+            else:
+                metrics = trainer.get_best_metrics()
+                self.finished_ok.emit(metrics)
         except Exception as e:
+            # Broad catch intentional: uncaught exceptions in QThread silently kill the thread
             logger.exception("Training failed")
             self.error.emit(str(e))
 
@@ -76,17 +99,17 @@ class BatchPredictWorker(QThread):
         self._iou = iou
         self._project_classes = project_classes
         self._kpt_labels = kpt_labels
-        self._cancelled = False
+        self._cancelled = threading.Event()
 
     def cancel(self) -> None:
         """Request cancellation of batch processing."""
-        self._cancelled = True
+        self._cancelled.set()
 
     def run(self) -> None:
         total = len(self._image_paths)
         try:
             for i, img_path in enumerate(self._image_paths):
-                if self._cancelled:
+                if self._cancelled.is_set():
                     break
                 annotations, img_size = self._predictor.predict_with_size(
                     img_path,
@@ -97,8 +120,9 @@ class BatchPredictWorker(QThread):
                 )
                 self.image_done.emit(str(img_path), annotations, img_size)
                 self.progress.emit(i + 1, total)
-            if not self._cancelled:
+            if not self._cancelled.is_set():
                 self.finished_ok.emit()
         except Exception as e:
+            # Broad catch intentional: uncaught exceptions in QThread silently kill the thread
             logger.exception("Batch inference failed")
             self.error.emit(str(e))

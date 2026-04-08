@@ -1,3 +1,241 @@
+# Plan 4: Canvas Widget
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build the annotation canvas widget — the central interactive area where users view images, draw/edit bounding boxes and keypoints, zoom/pan, and manage annotation selections.
+
+**Architecture:** A single `AnnotationCanvas(QWidget)` backed by a coordinate transform helper that converts between normalized [0,1] annotation coords and pixel screen coords. The canvas paints the image, then overlays annotations using QPainter. Mouse events handle tool modes (select, draw_bbox, draw_keypoint). Signals notify the parent of annotation changes. A `ClassPickerPopup` appears after drawing to assign a class.
+
+**Tech Stack:** Python 3.10+, PyQt5 (QWidget, QPainter, QPen, QBrush, QTransform), pytest
+
+---
+
+## File Structure
+
+```
+auto-labeling-v3/
+├── src/
+│   └── ui/
+│       ├── canvas.py              # AnnotationCanvas widget
+│       └── class_picker.py        # ClassPickerPopup dialog
+├── tests/
+│   └── ui/
+│       ├── __init__.py
+│       ├── test_canvas.py         # Canvas logic tests
+│       └── test_class_picker.py   # Class picker tests
+```
+
+---
+
+## Task 1: Canvas Core — Image Display, Zoom, Pan
+
+**Files:**
+- Create: `src/ui/canvas.py`
+- Create: `tests/ui/__init__.py`
+- Create: `tests/ui/test_canvas.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+"""Tests for AnnotationCanvas."""
+from pathlib import Path
+
+import pytest
+from PyQt5.QtCore import Qt, QPointF
+from PyQt5.QtGui import QImage, QColor
+
+
+def _make_test_image(path: Path, width: int = 200, height: int = 150) -> None:
+    img = QImage(width, height, QImage.Format_RGB32)
+    img.fill(QColor(Qt.blue))
+    img.save(str(path), "PNG")
+
+
+class TestCanvasCoordinates:
+    """Test coordinate transformations between normalized and pixel space."""
+
+    def test_norm_to_pixel_identity(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        canvas.resize(400, 300)
+        # Load an image so transforms are defined
+        canvas._image_w = 200
+        canvas._image_h = 150
+        canvas._scale = 1.0
+        canvas._offset_x = 0.0
+        canvas._offset_y = 0.0
+
+        # Center of image at scale=1 offset=0
+        px, py = canvas.norm_to_pixel(0.5, 0.5)
+        assert abs(px - 100.0) < 1.0
+        assert abs(py - 75.0) < 1.0
+
+    def test_pixel_to_norm_roundtrip(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 200
+        canvas._image_h = 150
+        canvas._scale = 2.0
+        canvas._offset_x = 50.0
+        canvas._offset_y = 30.0
+
+        # Roundtrip
+        nx, ny = 0.3, 0.7
+        px, py = canvas.norm_to_pixel(nx, ny)
+        nx2, ny2 = canvas.pixel_to_norm(px, py)
+        assert abs(nx2 - nx) < 0.001
+        assert abs(ny2 - ny) < 0.001
+
+    def test_norm_to_pixel_with_scale(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 100
+        canvas._image_h = 100
+        canvas._scale = 2.0
+        canvas._offset_x = 10.0
+        canvas._offset_y = 20.0
+
+        px, py = canvas.norm_to_pixel(0.0, 0.0)
+        assert abs(px - 10.0) < 0.01
+        assert abs(py - 20.0) < 0.01
+
+        px, py = canvas.norm_to_pixel(1.0, 1.0)
+        assert abs(px - 210.0) < 0.01
+        assert abs(py - 220.0) < 0.01
+
+
+class TestCanvasState:
+    def test_initial_tool_mode(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        assert canvas.tool_mode == "select"
+
+    def test_set_tool_mode(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        canvas.set_tool_mode("draw_bbox")
+        assert canvas.tool_mode == "draw_bbox"
+        canvas.set_tool_mode("draw_keypoint")
+        assert canvas.tool_mode == "draw_keypoint"
+
+    def test_load_image(self, qapp, tmp_path):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        canvas.resize(400, 300)
+        img_path = tmp_path / "test.png"
+        _make_test_image(img_path, 200, 150)
+        canvas.load_image(str(img_path))
+        assert canvas._image is not None
+        assert canvas._image_w == 200
+        assert canvas._image_h == 150
+
+    def test_load_image_fit_to_window(self, qapp, tmp_path):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        canvas.resize(400, 300)
+        img_path = tmp_path / "big.png"
+        _make_test_image(img_path, 800, 600)
+        canvas.load_image(str(img_path))
+        # Scale should be set so image fits in widget
+        assert canvas._scale <= 1.0
+        assert canvas._scale > 0
+
+    def test_set_annotations(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 100
+        canvas._image_h = 100
+
+        ann = Annotation(class_name="cat", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4))
+        canvas.set_annotations([ann])
+        assert len(canvas._annotations) == 1
+        assert canvas._annotations[0].class_name == "cat"
+
+    def test_clear_resets_state(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 100
+        canvas._image_h = 100
+        ann = Annotation(class_name="cat", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4))
+        canvas.set_annotations([ann])
+        canvas.select_annotation(ann.id)
+        canvas.clear()
+        assert canvas._annotations == []
+        assert canvas._selected_id is None
+        assert canvas._image is None
+
+
+class TestCanvasSelection:
+    def test_select_annotation(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 100
+        canvas._image_h = 100
+        ann = Annotation(class_name="cat", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4))
+        canvas.set_annotations([ann])
+        canvas.select_annotation(ann.id)
+        assert canvas._selected_id == ann.id
+
+    def test_select_none_deselects(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 100
+        canvas._image_h = 100
+        ann = Annotation(class_name="cat", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4))
+        canvas.set_annotations([ann])
+        canvas.select_annotation(ann.id)
+        canvas.select_annotation(None)
+        assert canvas._selected_id is None
+
+    def test_hit_test_bbox(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 200
+        canvas._image_h = 200
+        canvas._scale = 1.0
+        canvas._offset_x = 0.0
+        canvas._offset_y = 0.0
+
+        # bbox at center (0.5, 0.5) size (0.4, 0.4) → pixel: x1=60,y1=60,x2=140,y2=140
+        ann = Annotation(class_name="cat", class_id=0, bbox=(0.5, 0.5, 0.4, 0.4))
+        canvas.set_annotations([ann])
+
+        # Click inside bbox
+        result = canvas.hit_test(100.0, 100.0)
+        assert result == ann.id
+
+        # Click outside bbox
+        result = canvas.hit_test(10.0, 10.0)
+        assert result is None
+```
+
+Write to `tests/ui/test_canvas.py`. Also create empty `tests/ui/__init__.py`.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `conda run -n yolov8 pytest tests/ui/test_canvas.py -v`
+Expected: FAIL — `ModuleNotFoundError`
+
+- [ ] **Step 3: Implement canvas core**
+
+```python
 """Annotation canvas widget for image display and annotation editing."""
 from __future__ import annotations
 
@@ -52,12 +290,8 @@ class AnnotationCanvas(QWidget):
     annotation_modified = pyqtSignal(str)     # annotation id
     annotation_selected = pyqtSignal(object)  # annotation id or None
     annotation_deleted = pyqtSignal(str)      # annotation id
-    annotation_copied = pyqtSignal(str)       # annotation id (for copy via right-click)
     class_requested = pyqtSignal(float, float)
-    class_change_requested = pyqtSignal(str, float, float)  # ann_id, px, py
     annotations_changed = pyqtSignal()
-
-    zoom_changed = pyqtSignal(float)  # current scale factor
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -100,9 +334,6 @@ class AnnotationCanvas(QWidget):
         self._panning: bool = False
         self._pan_start: tuple[float, float] | None = None
 
-        # Lock state (when all annotations are confirmed)
-        self._locked: bool = False
-
     # ── Coordinate transforms ──────────────────────────────────
 
     def norm_to_pixel(self, nx: float, ny: float) -> tuple[float, float]:
@@ -133,13 +364,9 @@ class AnnotationCanvas(QWidget):
         if qimage.isNull():
             logger.warning("Failed to load image: %s", path)
             return
-        self.set_pixmap(QPixmap.fromImage(qimage))
-
-    def set_pixmap(self, pixmap: QPixmap) -> None:
-        """Set a pre-loaded pixmap as the display image."""
-        self._image = pixmap
-        self._image_w = pixmap.width()
-        self._image_h = pixmap.height()
+        self._image = QPixmap.fromImage(qimage)
+        self._image_w = self._image.width()
+        self._image_h = self._image.height()
         self._fit_to_window()
         self.update()
 
@@ -150,7 +377,7 @@ class AnnotationCanvas(QWidget):
         self.update()
 
     def set_class_colors(self, colors: dict[str, str]) -> None:
-        """Set class name -> hex color mapping."""
+        """Set class name → hex color mapping."""
         self._class_colors = colors
         self.update()
 
@@ -168,14 +395,10 @@ class AnnotationCanvas(QWidget):
         self._draw_current = None
         if mode == "select":
             self.setCursor(Qt.ArrowCursor)
-        elif mode in ("draw_bbox", "draw_keypoint"):
+        elif mode == "draw_bbox":
             self.setCursor(Qt.CrossCursor)
-
-    def set_locked(self, locked: bool) -> None:
-        """Set lock state. When locked, editing is blocked (view-only)."""
-        if self._locked != locked:
-            self._locked = locked
-            self.update()
+        elif mode == "draw_keypoint":
+            self.setCursor(Qt.CrossCursor)
 
     def clear(self) -> None:
         """Clear image and annotations."""
@@ -187,7 +410,6 @@ class AnnotationCanvas(QWidget):
         self._drawing = False
         self._draw_start = None
         self._draw_current = None
-        self._locked = False
         self.update()
 
     def get_selected_annotation(self) -> Annotation | None:
@@ -200,7 +422,9 @@ class AnnotationCanvas(QWidget):
         return None
 
     def hit_test(self, px: float, py: float) -> str | None:
-        """Find annotation at pixel position. Returns annotation ID or None."""
+        """Find annotation at pixel position. Returns annotation ID or None.
+        Tests in reverse order (topmost first). Checks keypoints first, then bboxes.
+        """
         nx, ny = self.pixel_to_norm(px, py)
 
         # Check keypoints first (smaller targets, higher priority)
@@ -228,8 +452,6 @@ class AnnotationCanvas(QWidget):
         if self._image_w == 0 or self._image_h == 0:
             return
         ww, wh = self.width(), self.height()
-        if ww <= 0 or wh <= 0:
-            return
         sx = ww / self._image_w
         sy = wh / self._image_h
         self._scale = min(sx, sy)
@@ -259,59 +481,20 @@ class AnnotationCanvas(QWidget):
         )
         painter.drawPixmap(dest.toRect(), self._image)
 
-        # Viewport bounds for culling
-        vp_left = 0.0
-        vp_top = 0.0
-        vp_right = float(self.width())
-        vp_bottom = float(self.height())
-
-        # LOD: skip labels at very small zoom
-        draw_labels = self._scale >= 0.3
-
-        # Draw annotations with viewport culling
+        # Draw annotations
         for ann in self._annotations:
-            # Cull: skip if annotation is entirely outside viewport
-            if ann.bbox and not self._ann_in_viewport(ann, vp_left, vp_top, vp_right, vp_bottom):
-                continue
             is_selected = ann.id == self._selected_id
             color = QColor(self._class_colors.get(ann.class_name, "#89b4fa"))
-            self._paint_annotation(painter, ann, color, is_selected, draw_labels)
+            self._paint_annotation(painter, ann, color, is_selected)
 
         # Draw in-progress bbox
         if self._drawing and self._draw_start and self._draw_current:
             self._paint_drawing_preview(painter)
 
-        # Zoom level indicator + lock badge
-        if self._image is not None:
-            font = QFont()
-            font.setPixelSize(11)
-            painter.setFont(font)
-            painter.setPen(QColor("#6c7086"))
-            zoom_pct = int(self._scale * 100)
-            status_text = f"{zoom_pct}%"
-            if self._locked:
-                status_text += "  🔒"
-            painter.drawText(8, self.height() - 8, status_text)
-
         painter.end()
 
-    def _ann_in_viewport(
-        self, ann: Annotation, vp_left: float, vp_top: float, vp_right: float, vp_bottom: float
-    ) -> bool:
-        """Check if annotation bbox overlaps the viewport."""
-        if not ann.bbox:
-            return True  # keypoint-only annotations always drawn
-        cx, cy, w, h = ann.bbox
-        x1, y1 = self.norm_to_pixel(cx - w / 2, cy - h / 2)
-        x2, y2 = self.norm_to_pixel(cx + w / 2, cy + h / 2)
-        # Annotation is outside if entirely to the left, right, above, or below viewport
-        if x2 < vp_left or x1 > vp_right or y2 < vp_top or y1 > vp_bottom:
-            return False
-        return True
-
     def _paint_annotation(
-        self, painter: QPainter, ann: Annotation, color: QColor, selected: bool,
-        draw_labels: bool = True,
+        self, painter: QPainter, ann: Annotation, color: QColor, selected: bool
     ) -> None:
         """Paint a single annotation (bbox + keypoints + label)."""
         if ann.bbox:
@@ -328,25 +511,24 @@ class AnnotationCanvas(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
 
-            # Label background (skip at low zoom for performance)
-            if draw_labels or selected:
-                label_text = ann.class_name
-                if not ann.confirmed:
-                    label_text += " ⚡"
-                font = QFont()
-                font.setPixelSize(LABEL_FONT_SIZE)
-                painter.setFont(font)
-                fm = painter.fontMetrics()
-                tw = fm.horizontalAdvance(label_text) + LABEL_PADDING * 2
-                th = fm.height() + LABEL_PADDING * 2
-                label_rect = QRectF(x1, y1 - th, tw, th)
-                if label_rect.top() < 0:
-                    label_rect.moveTop(y1)
-                bg_color = QColor(color)
-                bg_color.setAlpha(200)
-                painter.fillRect(label_rect, bg_color)
-                painter.setPen(QColor("#1e1e2e"))
-                painter.drawText(label_rect, Qt.AlignCenter, label_text)
+            # Label background
+            label_text = ann.class_name
+            if not ann.confirmed:
+                label_text += " ⚡"
+            font = QFont()
+            font.setPixelSize(LABEL_FONT_SIZE)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(label_text) + LABEL_PADDING * 2
+            th = fm.height() + LABEL_PADDING * 2
+            label_rect = QRectF(x1, y1 - th, tw, th)
+            if label_rect.top() < 0:
+                label_rect.moveTop(y1)
+            bg_color = QColor(color)
+            bg_color.setAlpha(200)
+            painter.fillRect(label_rect, bg_color)
+            painter.setPen(QColor("#1e1e2e"))
+            painter.drawText(label_rect, Qt.AlignCenter, label_text)
 
             # Control handles when selected
             if selected:
@@ -369,8 +551,8 @@ class AnnotationCanvas(QWidget):
 
             painter.drawEllipse(QPointF(px, py), r, r)
 
-            # Label for keypoint (skip at low zoom)
-            if selected and draw_labels:
+            # Label for keypoint
+            if selected:
                 painter.setPen(QColor("#cdd6f4"))
                 font = QFont()
                 font.setPixelSize(10)
@@ -386,7 +568,7 @@ class AnnotationCanvas(QWidget):
             painter.drawRect(QRectF(hx - hs, hy - hs, hs * 2, hs * 2))
 
     def _paint_drawing_preview(self, painter: QPainter) -> None:
-        """Paint the bbox being drawn with size HUD."""
+        """Paint the bbox being drawn."""
         sx, sy = self.norm_to_pixel(*self._draw_start)
         ex, ey = self.norm_to_pixel(*self._draw_current)
         painter.setPen(QPen(QColor("#89b4fa"), 2, Qt.DashLine))
@@ -396,27 +578,6 @@ class AnnotationCanvas(QWidget):
         w = abs(ex - sx)
         h = abs(ey - sy)
         painter.drawRect(QRectF(x, y, w, h))
-
-        # Size HUD (pixel dimensions)
-        if self._image_w > 0 and self._image_h > 0:
-            ns = self._draw_start
-            nc = self._draw_current
-            pw = int(abs(nc[0] - ns[0]) * self._image_w)
-            ph = int(abs(nc[1] - ns[1]) * self._image_h)
-            size_text = f"{pw} x {ph}"
-            font = QFont()
-            font.setPixelSize(11)
-            painter.setFont(font)
-            bg = QColor("#313244")
-            bg.setAlpha(200)
-            fm = painter.fontMetrics()
-            tw = fm.horizontalAdvance(size_text) + 8
-            th = fm.height() + 4
-            label_x = x + w / 2 - tw / 2
-            label_y = y + h + 4
-            painter.fillRect(QRectF(label_x, label_y, tw, th), bg)
-            painter.setPen(QColor("#cdd6f4"))
-            painter.drawText(QRectF(label_x, label_y, tw, th), Qt.AlignCenter, size_text)
 
     # ── Mouse events ───────────────────────────────────────────
 
@@ -433,10 +594,6 @@ class AnnotationCanvas(QWidget):
         if event.button() != Qt.LeftButton:
             return
 
-        # Block editing when locked (allow selection for viewing)
-        if self._locked and self.tool_mode != "select":
-            return
-
         if self.tool_mode == "draw_bbox":
             nx, ny = self._clamp_norm(*self.pixel_to_norm(px, py))
             self._drawing = True
@@ -445,14 +602,15 @@ class AnnotationCanvas(QWidget):
 
         elif self.tool_mode == "draw_keypoint":
             nx, ny = self._clamp_norm(*self.pixel_to_norm(px, py))
+            # Emit class_requested to get class info, then create keypoint
+            self.class_requested.emit(px, py)
+            # Store the norm coords for when class is assigned
             self._draw_start = (nx, ny)
-            # Don't emit class_requested here — do it on mouse release
-            # to avoid popup appearing while mouse button is still pressed
 
         elif self.tool_mode == "select":
             # Check if clicking a handle first (for selected bbox)
             handle = self._hit_test_handle(px, py)
-            if handle and not self._locked:
+            if handle:
                 self._dragging = True
                 self._drag_type = handle
                 self._drag_ann_id = self._selected_id
@@ -464,7 +622,7 @@ class AnnotationCanvas(QWidget):
 
             # Check if clicking a keypoint to drag
             kp_hit = self._hit_test_keypoint(px, py)
-            if kp_hit and not self._locked:
+            if kp_hit:
                 ann_id, kp_idx = kp_hit
                 self._dragging = True
                 self._drag_type = "move_kp"
@@ -477,14 +635,14 @@ class AnnotationCanvas(QWidget):
             hit_id = self.hit_test(px, py)
             if hit_id:
                 self.select_annotation(hit_id)
-                if not self._locked:
-                    self._dragging = True
-                    self._drag_type = "move"
-                    self._drag_ann_id = hit_id
-                    self._drag_start_norm = self.pixel_to_norm(px, py)
-                    ann = self.get_selected_annotation()
-                    if ann:
-                        self._drag_ann_snapshot = ann.to_dict()
+                # Start move drag
+                self._dragging = True
+                self._drag_type = "move"
+                self._drag_ann_id = hit_id
+                self._drag_start_norm = self.pixel_to_norm(px, py)
+                ann = self.get_selected_annotation()
+                if ann:
+                    self._drag_ann_snapshot = ann.to_dict()
             else:
                 self.select_annotation(None)
 
@@ -512,21 +670,6 @@ class AnnotationCanvas(QWidget):
             self.update()
             return
 
-        # Cursor feedback in select mode
-        if self.tool_mode == "select" and self._image is not None:
-            handle = self._hit_test_handle(px, py)
-            if handle:
-                if "tl" in handle or "br" in handle:
-                    self.setCursor(Qt.SizeFDiagCursor)
-                else:
-                    self.setCursor(Qt.SizeBDiagCursor)
-            elif self._hit_test_keypoint(px, py):
-                self.setCursor(Qt.SizeAllCursor)
-            elif self.hit_test(px, py):
-                self.setCursor(Qt.SizeAllCursor)
-            else:
-                self.setCursor(Qt.ArrowCursor)
-
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         px, py = event.x(), event.y()
 
@@ -541,27 +684,26 @@ class AnnotationCanvas(QWidget):
 
         if self._drawing and self._draw_start and self.tool_mode == "draw_bbox":
             nx, ny = self._clamp_norm(*self.pixel_to_norm(px, py))
-            self._draw_current = (nx, ny)
             sx, sy = self._draw_start
             w = abs(nx - sx)
             h = abs(ny - sy)
+            # Minimum size check
             if w > 0.01 and h > 0.01:
+                cx = (sx + nx) / 2
+                cy = (sy + ny) / 2
+                # Request class assignment
+                self._draw_current = (nx, ny)
                 self.class_requested.emit(px, py)
-            else:
-                self._draw_start = None
-                self._draw_current = None
             self._drawing = False
+            self._draw_start = None
+            self._draw_current = None
             self.update()
             return
 
-        if self.tool_mode == "draw_keypoint" and self._draw_start:
-            # Emit class_requested on release (not press) so popup
-            # doesn't appear while mouse button is held
-            self.class_requested.emit(px, py)
-            return
-
         if self._dragging:
-            if self._drag_type in ("move", "resize_tl", "resize_tr", "resize_bl", "resize_br", "move_kp"):
+            if self._drag_type in ("move", "resize_tl", "resize_tr", "resize_bl", "resize_br"):
+                self.annotation_modified.emit(self._drag_ann_id)
+            elif self._drag_type == "move_kp":
                 self.annotation_modified.emit(self._drag_ann_id)
             self._dragging = False
             self._drag_type = ""
@@ -570,6 +712,7 @@ class AnnotationCanvas(QWidget):
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.ControlModifier:
+            # Zoom centered on mouse
             old_nx, old_ny = self.pixel_to_norm(event.x(), event.y())
             if event.angleDelta().y() > 0:
                 self._scale = min(self._scale * ZOOM_FACTOR, MAX_SCALE)
@@ -580,44 +723,7 @@ class AnnotationCanvas(QWidget):
             new_py = old_ny * self._image_h * self._scale + self._offset_y
             self._offset_x += event.x() - new_px
             self._offset_y += event.y() - new_py
-            self.zoom_changed.emit(self._scale)
             self.update()
-
-    def zoom_in(self) -> None:
-        """Zoom in by one step."""
-        if self._image is None:
-            return
-        cx, cy = self.width() / 2, self.height() / 2
-        old_nx, old_ny = self.pixel_to_norm(cx, cy)
-        self._scale = min(self._scale * ZOOM_FACTOR, MAX_SCALE)
-        new_px = old_nx * self._image_w * self._scale + self._offset_x
-        new_py = old_ny * self._image_h * self._scale + self._offset_y
-        self._offset_x += cx - new_px
-        self._offset_y += cy - new_py
-        self.zoom_changed.emit(self._scale)
-        self.update()
-
-    def zoom_out(self) -> None:
-        """Zoom out by one step."""
-        if self._image is None:
-            return
-        cx, cy = self.width() / 2, self.height() / 2
-        old_nx, old_ny = self.pixel_to_norm(cx, cy)
-        self._scale = max(self._scale / ZOOM_FACTOR, MIN_SCALE)
-        new_px = old_nx * self._image_w * self._scale + self._offset_x
-        new_py = old_ny * self._image_h * self._scale + self._offset_y
-        self._offset_x += cx - new_px
-        self._offset_y += cy - new_py
-        self.zoom_changed.emit(self._scale)
-        self.update()
-
-    def zoom_fit(self) -> None:
-        """Reset zoom to fit image in window."""
-        if self._image is None:
-            return
-        self._fit_to_window()
-        self.zoom_changed.emit(self._scale)
-        self.update()
 
     def contextMenuEvent(self, event) -> None:
         """Show right-click context menu."""
@@ -633,10 +739,6 @@ class AnnotationCanvas(QWidget):
 
         menu = QMenu(self)
 
-        # Modify class
-        change_cls = menu.addAction("修改类别")
-        change_cls.triggered.connect(lambda: self.class_change_requested.emit(ann.id, px, py))
-
         if ann.confirmed:
             unconfirm = menu.addAction("取消确认")
             unconfirm.triggered.connect(lambda: self._toggle_confirm(ann, False))
@@ -644,26 +746,15 @@ class AnnotationCanvas(QWidget):
             confirm = menu.addAction("确认")
             confirm.triggered.connect(lambda: self._toggle_confirm(ann, True))
 
-        menu.addSeparator()
-
-        copy_ann = menu.addAction("复制标注 (Ctrl+C)")
-        copy_ann.triggered.connect(lambda: self.annotation_copied.emit(ann.id))
-
         delete = menu.addAction("删除")
-        if self._locked:
-            delete.setEnabled(False)
         delete.triggered.connect(lambda: self.annotation_deleted.emit(ann.id))
 
         menu.exec_(event.globalPos())
 
     def resizeEvent(self, event: QResizeEvent) -> None:
-        if self._image and not self._draw_start:
+        if self._image:
             self._fit_to_window()
         super().resizeEvent(event)
-
-    def keyPressEvent(self, event) -> None:
-        """Let key events propagate to parent (LabelPanel) for handling."""
-        event.ignore()
 
     # ── Drag helpers ───────────────────────────────────────────
 
@@ -684,16 +775,18 @@ class AnnotationCanvas(QWidget):
         dy = ny - self._drag_start_norm[1]
 
         if self._drag_type == "move" and ann.bbox and self._drag_ann_snapshot:
-            orig_bbox = self._drag_ann_snapshot["bbox"]
+            orig = self._drag_ann_snapshot
+            orig_bbox = orig["bbox"]
             new_cx = orig_bbox[0] + dx
             new_cy = orig_bbox[1] + dy
             w, h = orig_bbox[2], orig_bbox[3]
+            # Clamp to image bounds
             new_cx = max(w / 2, min(1.0 - w / 2, new_cx))
             new_cy = max(h / 2, min(1.0 - h / 2, new_cy))
             ann.bbox = (new_cx, new_cy, w, h)
             # Move keypoints by same offset
-            if "keypoints" in self._drag_ann_snapshot:
-                for i, kp_dict in enumerate(self._drag_ann_snapshot["keypoints"]):
+            if "keypoints" in orig:
+                for i, kp_dict in enumerate(orig["keypoints"]):
                     if i < len(ann.keypoints):
                         ann.keypoints[i].x = max(0, min(1, kp_dict["x"] + dx))
                         ann.keypoints[i].y = max(0, min(1, kp_dict["y"] + dy))
@@ -820,3 +913,194 @@ class AnnotationCanvas(QWidget):
         self._draw_start = None
         self.update()
         return ann
+```
+
+Write to `src/ui/canvas.py`.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `conda run -n yolov8 pytest tests/ui/test_canvas.py -v`
+Expected: all tests PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/ui/canvas.py tests/ui/__init__.py tests/ui/test_canvas.py
+git commit -m "feat: annotation canvas with image display, zoom/pan, bbox/keypoint rendering"
+```
+
+---
+
+## Task 2: Class Picker Popup
+
+**Files:**
+- Create: `src/ui/class_picker.py`
+- Create: `tests/ui/test_class_picker.py`
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+"""Tests for ClassPickerPopup."""
+import pytest
+from PyQt5.QtCore import Qt
+
+
+class TestClassPickerPopup:
+    def test_creates_with_classes(self, qapp):
+        from src.ui.class_picker import ClassPickerPopup
+
+        picker = ClassPickerPopup(
+            classes=["cat", "dog", "bird"],
+            colors={"cat": "#a6e3a1", "dog": "#89b4fa", "bird": "#f38ba8"},
+        )
+        assert picker._list.count() == 3
+
+    def test_default_selection(self, qapp):
+        from src.ui.class_picker import ClassPickerPopup
+
+        picker = ClassPickerPopup(
+            classes=["cat", "dog"],
+            colors={},
+            default_class="dog",
+        )
+        assert picker._list.currentRow() == 1
+
+    def test_default_first_if_no_default(self, qapp):
+        from src.ui.class_picker import ClassPickerPopup
+
+        picker = ClassPickerPopup(
+            classes=["cat", "dog"],
+            colors={},
+        )
+        assert picker._list.currentRow() == 0
+
+    def test_get_selected_class(self, qapp):
+        from src.ui.class_picker import ClassPickerPopup
+
+        picker = ClassPickerPopup(
+            classes=["cat", "dog", "bird"],
+            colors={},
+        )
+        picker._list.setCurrentRow(2)
+        assert picker.get_selected_class() == "bird"
+        assert picker.get_selected_index() == 2
+
+    def test_empty_classes(self, qapp):
+        from src.ui.class_picker import ClassPickerPopup
+
+        picker = ClassPickerPopup(classes=[], colors={})
+        assert picker._list.count() == 0
+        assert picker.get_selected_class() is None
+```
+
+Write to `tests/ui/test_class_picker.py`.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `conda run -n yolov8 pytest tests/ui/test_class_picker.py -v`
+Expected: FAIL
+
+- [ ] **Step 3: Implement class picker**
+
+```python
+"""Class picker popup for annotation class assignment."""
+from __future__ import annotations
+
+from PyQt5.QtWidgets import (
+    QDialog,
+    QVBoxLayout,
+    QListWidget,
+    QListWidgetItem,
+    QLabel,
+)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
+
+
+class ClassPickerPopup(QDialog):
+    """Popup dialog for selecting an annotation class.
+
+    Shows a list of classes with color indicators.
+    User can click or press Enter to confirm selection.
+    """
+
+    def __init__(
+        self,
+        classes: list[str],
+        colors: dict[str, str],
+        default_class: str | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("选择类别")
+        self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.setMinimumWidth(160)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+
+        header = QLabel("选择类别:")
+        header.setStyleSheet("color: #a6adc8; font-size: 11px; padding: 2px;")
+        layout.addWidget(header)
+
+        self._list = QListWidget()
+        self._list.setMaximumHeight(200)
+
+        default_row = 0
+        for i, cls_name in enumerate(classes):
+            item = QListWidgetItem(cls_name)
+            color = colors.get(cls_name, "#89b4fa")
+            item.setForeground(QColor(color))
+            self._list.addItem(item)
+            if cls_name == default_class:
+                default_row = i
+
+        if classes:
+            self._list.setCurrentRow(default_row)
+
+        self._list.itemDoubleClicked.connect(self.accept)
+        layout.addWidget(self._list)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.accept()
+        elif event.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(event)
+
+    def get_selected_class(self) -> str | None:
+        """Return the selected class name, or None."""
+        item = self._list.currentItem()
+        return item.text() if item else None
+
+    def get_selected_index(self) -> int:
+        """Return the selected class index, or -1."""
+        return self._list.currentRow()
+```
+
+Write to `src/ui/class_picker.py`.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `conda run -n yolov8 pytest tests/ui/test_class_picker.py -v`
+Expected: all 5 tests PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/ui/class_picker.py tests/ui/test_class_picker.py
+git commit -m "feat: class picker popup for annotation class assignment"
+```
+
+---
+
+## Task 3: Run Full Test Suite
+
+- [ ] **Step 1: Run full test suite**
+
+Run: `conda run -n yolov8 pytest -v --tb=short`
+Expected: all tests PASS. No regressions.
+
+- [ ] **Step 2: Commit if any fixups needed**

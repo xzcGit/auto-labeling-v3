@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QGroupBox,
     QComboBox,
+    QPushButton,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
@@ -42,12 +43,27 @@ class AnnotationPanel(QWidget):
         # Image tags section
         tags_group = QGroupBox("图片分类")
         tags_layout = QVBoxLayout(tags_group)
+
+        tag_add_layout = QHBoxLayout()
         self._tags_combo = QComboBox()
         self._tags_combo.setPlaceholderText("选择分类标签...")
-        tags_layout.addWidget(self._tags_combo)
+        tag_add_layout.addWidget(self._tags_combo)
+        self._btn_add_tag = QPushButton("+")
+        self._btn_add_tag.setFixedWidth(30)
+        self._btn_add_tag.setToolTip("添加标签")
+        self._btn_add_tag.clicked.connect(self._on_add_tag)
+        tag_add_layout.addWidget(self._btn_add_tag)
+        tags_layout.addLayout(tag_add_layout)
+
         self._tags_list = QListWidget()
         self._tags_list.setMaximumHeight(60)
         tags_layout.addWidget(self._tags_list)
+
+        self._btn_remove_tag = QPushButton("移除选中标签")
+        self._btn_remove_tag.setFixedHeight(24)
+        self._btn_remove_tag.clicked.connect(self._on_remove_tag)
+        tags_layout.addWidget(self._btn_remove_tag)
+
         layout.addWidget(tags_group)
 
         # Annotation list
@@ -75,10 +91,36 @@ class AnnotationPanel(QWidget):
 
         layout.addWidget(props_group)
 
-        # Stats
+        # Stats (current image)
         self._stats_label = QLabel("")
         self._stats_label.setStyleSheet("color: #a6adc8; font-size: 11px;")
         layout.addWidget(self._stats_label)
+
+        # Project stats section
+        self._stats_group = QGroupBox("项目统计")
+        stats_layout = QVBoxLayout(self._stats_group)
+
+        self._project_total_label = QLabel("总图片: 0")
+        self._project_labeled_label = QLabel("已标注: 0")
+        self._project_confirmed_label = QLabel("全确认: 0")
+        self._project_ann_count_label = QLabel("总标注数: 0")
+
+        for lbl in [self._project_total_label, self._project_labeled_label,
+                     self._project_confirmed_label, self._project_ann_count_label]:
+            lbl.setStyleSheet("color: #cdd6f4; font-size: 11px;")
+            stats_layout.addWidget(lbl)
+
+        # Class distribution
+        self._class_dist_label = QLabel("类别分布:")
+        self._class_dist_label.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        stats_layout.addWidget(self._class_dist_label)
+
+        self._class_dist_list = QListWidget()
+        self._class_dist_list.setMaximumHeight(120)
+        self._class_dist_list.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self._class_dist_list)
+
+        layout.addWidget(self._stats_group)
 
         layout.addStretch()
 
@@ -150,6 +192,29 @@ class AnnotationPanel(QWidget):
         """Get the current image tags."""
         return [self._tags_list.item(i).text() for i in range(self._tags_list.count())]
 
+    def set_project_stats(self, stats: dict) -> None:
+        """Update project-level statistics.
+
+        Expected stats dict keys:
+            total_images: int
+            labeled_images: int
+            confirmed_images: int
+            total_annotations: int
+            class_counts: dict[str, int]
+        """
+        self._project_total_label.setText(f"总图片: {stats.get('total_images', 0)}")
+        self._project_labeled_label.setText(f"已标注: {stats.get('labeled_images', 0)}")
+        self._project_confirmed_label.setText(f"全确认: {stats.get('confirmed_images', 0)}")
+        self._project_ann_count_label.setText(f"总标注数: {stats.get('total_annotations', 0)}")
+
+        self._class_dist_list.clear()
+        class_counts = stats.get("class_counts", {})
+        for cls_name, count in sorted(class_counts.items(), key=lambda x: -x[1]):
+            color = self._class_colors.get(cls_name, "#89b4fa")
+            item = QListWidgetItem(f"{cls_name}: {count}")
+            item.setForeground(QColor(color))
+            self._class_dist_list.addItem(item)
+
     def clear(self) -> None:
         """Clear all state."""
         self._annotations = []
@@ -158,6 +223,7 @@ class AnnotationPanel(QWidget):
         self._tags_list.clear()
         self._clear_properties()
         self._stats_label.setText("")
+        self._class_dist_list.clear()
 
     def _show_properties(self, ann: Annotation) -> None:
         self._class_label.setText(f"类别: {ann.class_name}")
@@ -197,3 +263,20 @@ class AnnotationPanel(QWidget):
             if item:
                 ann_id = item.data(Qt.UserRole)
                 self.annotation_clicked.emit(ann_id)
+
+    def _on_add_tag(self) -> None:
+        """Add selected class as image tag."""
+        tag = self._tags_combo.currentText()
+        if not tag:
+            return
+        # Prevent duplicates
+        for i in range(self._tags_list.count()):
+            if self._tags_list.item(i).text() == tag:
+                return
+        self._tags_list.addItem(tag)
+
+    def _on_remove_tag(self) -> None:
+        """Remove selected tag from the list."""
+        row = self._tags_list.currentRow()
+        if row >= 0:
+            self._tags_list.takeItem(row)

@@ -180,3 +180,85 @@ class TestCanvasSelection:
         # Click outside bbox
         result = canvas.hit_test(10.0, 10.0)
         assert result is None
+
+
+class TestCanvasLock:
+    def test_set_locked(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        assert canvas._locked is False
+        canvas.set_locked(True)
+        assert canvas._locked is True
+        canvas.set_locked(False)
+        assert canvas._locked is False
+
+    def test_clear_resets_lock(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        canvas.set_locked(True)
+        canvas.clear()
+        assert canvas._locked is False
+
+    def test_lock_blocks_draw_mode(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from PyQt5.QtGui import QMouseEvent
+        from PyQt5.QtCore import QEvent, QPoint
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 200
+        canvas._image_h = 200
+        canvas._scale = 1.0
+        canvas._offset_x = 0.0
+        canvas._offset_y = 0.0
+        canvas.set_tool_mode("draw_bbox")
+        canvas.set_locked(True)
+
+        # Simulate left click — should not start drawing
+        event = QMouseEvent(QEvent.MouseButtonPress, QPoint(100, 100),
+                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        canvas.mousePressEvent(event)
+        assert canvas._drawing is False
+
+
+class TestCanvasViewportCulling:
+    def test_ann_in_viewport_visible(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 200
+        canvas._image_h = 200
+        canvas._scale = 1.0
+        canvas._offset_x = 0.0
+        canvas._offset_y = 0.0
+
+        ann = Annotation(class_name="cat", class_id=0, bbox=(0.5, 0.5, 0.3, 0.3))
+        assert canvas._ann_in_viewport(ann, 0, 0, 200, 200) is True
+
+    def test_ann_in_viewport_outside(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        canvas._image_w = 200
+        canvas._image_h = 200
+        canvas._scale = 1.0
+        canvas._offset_x = -500.0  # image scrolled far left
+        canvas._offset_y = 0.0
+
+        # Annotation centered at 0.5 → pixel 100, but offset pushes it to -400
+        ann = Annotation(class_name="cat", class_id=0, bbox=(0.5, 0.5, 0.3, 0.3))
+        assert canvas._ann_in_viewport(ann, 0, 0, 200, 200) is False
+
+    def test_keypoint_only_always_in_viewport(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        kp_ann = Annotation(class_name="pt", class_id=0, keypoints=[
+            Keypoint(x=0.5, y=0.5, visible=2, label="nose"),
+        ])
+        # No bbox, should always return True
+        assert canvas._ann_in_viewport(kp_ann, 0, 0, 200, 200) is True

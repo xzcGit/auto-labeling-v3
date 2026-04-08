@@ -17,12 +17,26 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit,
     QSplitter,
     QCheckBox,
+    QProgressBar,
+    QScrollArea,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
-from src.engine.trainer import TrainConfig
+from src.engine.trainer import TrainConfig, TRAIN_PRESETS
+from src.ui.icons import icon
 
 logger = logging.getLogger(__name__)
+
+
+def _collapsible_group(title: str, collapsed: bool = False) -> QGroupBox:
+    """Create a checkable QGroupBox that acts as collapsible section."""
+    group = QGroupBox(title)
+    group.setCheckable(True)
+    group.setChecked(not collapsed)
+    group.toggled.connect(lambda on: [
+        child.setVisible(on) for child in group.findChildren(QWidget)
+    ])
+    return group
 
 
 class TrainPanel(QWidget):
@@ -35,21 +49,26 @@ class TrainPanel(QWidget):
 
     start_requested = pyqtSignal(object)  # TrainConfig
     stop_requested = pyqtSignal()
+    preview_augmentation_requested = pyqtSignal(dict)  # augmentation params dict
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._registered_model_paths: dict[str, str] = {}  # display_name -> path
         self._init_ui()
         self._connect_signals()
 
     def _init_ui(self) -> None:
         layout = QHBoxLayout(self)
 
-        # Left: parameter config
+        # Left: parameter config (scrollable)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(8, 8, 8, 8)
 
-        # Task type
+        # ── Task config ──
         task_group = QGroupBox("任务配置")
         task_form = QFormLayout(task_group)
         self._task_combo = QComboBox()
@@ -66,9 +85,13 @@ class TrainPanel(QWidget):
         self._device_combo.addItems(["", "0", "1", "cpu"])
         task_form.addRow("设备:", self._device_combo)
 
+        self._preset_combo = QComboBox()
+        self._preset_combo.addItems(list(TRAIN_PRESETS.keys()))
+        task_form.addRow("预设:", self._preset_combo)
+
         left_layout.addWidget(task_group)
 
-        # Basic hyperparameters
+        # ── Basic hyperparameters ──
         hyper_group = QGroupBox("训练参数")
         hyper_form = QFormLayout(hyper_group)
 
@@ -108,31 +131,161 @@ class TrainPanel(QWidget):
 
         left_layout.addWidget(hyper_group)
 
-        # Data augmentation
-        aug_group = QGroupBox("数据增强")
+        # ── Advanced optimizer params (collapsed by default) ──
+        opt_group = _collapsible_group("优化器高级参数", collapsed=True)
+        opt_form = QFormLayout(opt_group)
+
+        self._lrf_spin = QDoubleSpinBox()
+        self._lrf_spin.setRange(0.0001, 1.0)
+        self._lrf_spin.setDecimals(4)
+        self._lrf_spin.setSingleStep(0.001)
+        self._lrf_spin.setValue(0.01)
+        opt_form.addRow("最终学习率(lrf):", self._lrf_spin)
+
+        self._momentum_spin = QDoubleSpinBox()
+        self._momentum_spin.setRange(0.0, 1.0)
+        self._momentum_spin.setDecimals(3)
+        self._momentum_spin.setSingleStep(0.01)
+        self._momentum_spin.setValue(0.937)
+        opt_form.addRow("动量:", self._momentum_spin)
+
+        self._weight_decay_spin = QDoubleSpinBox()
+        self._weight_decay_spin.setRange(0.0, 0.1)
+        self._weight_decay_spin.setDecimals(5)
+        self._weight_decay_spin.setSingleStep(0.0001)
+        self._weight_decay_spin.setValue(0.0005)
+        opt_form.addRow("权重衰减:", self._weight_decay_spin)
+
+        self._warmup_epochs_spin = QDoubleSpinBox()
+        self._warmup_epochs_spin.setRange(0.0, 10.0)
+        self._warmup_epochs_spin.setDecimals(1)
+        self._warmup_epochs_spin.setSingleStep(0.5)
+        self._warmup_epochs_spin.setValue(3.0)
+        opt_form.addRow("Warmup Epochs:", self._warmup_epochs_spin)
+
+        self._warmup_momentum_spin = QDoubleSpinBox()
+        self._warmup_momentum_spin.setRange(0.0, 1.0)
+        self._warmup_momentum_spin.setDecimals(2)
+        self._warmup_momentum_spin.setSingleStep(0.05)
+        self._warmup_momentum_spin.setValue(0.8)
+        opt_form.addRow("Warmup 动量:", self._warmup_momentum_spin)
+
+        self._warmup_bias_lr_spin = QDoubleSpinBox()
+        self._warmup_bias_lr_spin.setRange(0.0, 1.0)
+        self._warmup_bias_lr_spin.setDecimals(2)
+        self._warmup_bias_lr_spin.setSingleStep(0.01)
+        self._warmup_bias_lr_spin.setValue(0.1)
+        opt_form.addRow("Warmup Bias LR:", self._warmup_bias_lr_spin)
+
+        left_layout.addWidget(opt_group)
+
+        # ── Data augmentation — color ──
+        aug_group = QGroupBox("数据增强 — 颜色")
         aug_form = QFormLayout(aug_group)
 
-        self._mosaic_spin = QDoubleSpinBox()
-        self._mosaic_spin.setRange(0, 1)
-        self._mosaic_spin.setDecimals(1)
-        self._mosaic_spin.setValue(1.0)
-        aug_form.addRow("Mosaic:", self._mosaic_spin)
+        self._hsv_h_spin = QDoubleSpinBox()
+        self._hsv_h_spin.setRange(0, 1)
+        self._hsv_h_spin.setDecimals(3)
+        self._hsv_h_spin.setSingleStep(0.005)
+        self._hsv_h_spin.setValue(0.015)
+        aug_form.addRow("HSV-H (色调):", self._hsv_h_spin)
+
+        self._hsv_s_spin = QDoubleSpinBox()
+        self._hsv_s_spin.setRange(0, 1)
+        self._hsv_s_spin.setDecimals(1)
+        self._hsv_s_spin.setSingleStep(0.1)
+        self._hsv_s_spin.setValue(0.7)
+        aug_form.addRow("HSV-S (饱和度):", self._hsv_s_spin)
+
+        self._hsv_v_spin = QDoubleSpinBox()
+        self._hsv_v_spin.setRange(0, 1)
+        self._hsv_v_spin.setDecimals(1)
+        self._hsv_v_spin.setSingleStep(0.1)
+        self._hsv_v_spin.setValue(0.4)
+        aug_form.addRow("HSV-V (亮度):", self._hsv_v_spin)
+
+        left_layout.addWidget(aug_group)
+
+        # ── Data augmentation — geometric ──
+        geo_group = _collapsible_group("数据增强 — 几何变换", collapsed=True)
+        geo_form = QFormLayout(geo_group)
+
+        self._degrees_spin = QDoubleSpinBox()
+        self._degrees_spin.setRange(0, 180)
+        self._degrees_spin.setDecimals(1)
+        self._degrees_spin.setSingleStep(5)
+        self._degrees_spin.setValue(0.0)
+        geo_form.addRow("旋转角度:", self._degrees_spin)
+
+        self._translate_spin = QDoubleSpinBox()
+        self._translate_spin.setRange(0, 1)
+        self._translate_spin.setDecimals(2)
+        self._translate_spin.setSingleStep(0.05)
+        self._translate_spin.setValue(0.1)
+        geo_form.addRow("平移:", self._translate_spin)
+
+        self._scale_spin = QDoubleSpinBox()
+        self._scale_spin.setRange(0, 1)
+        self._scale_spin.setDecimals(2)
+        self._scale_spin.setSingleStep(0.1)
+        self._scale_spin.setValue(0.5)
+        geo_form.addRow("缩放:", self._scale_spin)
+
+        self._shear_spin = QDoubleSpinBox()
+        self._shear_spin.setRange(0, 90)
+        self._shear_spin.setDecimals(1)
+        self._shear_spin.setSingleStep(1)
+        self._shear_spin.setValue(0.0)
+        geo_form.addRow("剪切:", self._shear_spin)
+
+        self._perspective_spin = QDoubleSpinBox()
+        self._perspective_spin.setRange(0.0, 0.001)
+        self._perspective_spin.setDecimals(4)
+        self._perspective_spin.setSingleStep(0.0001)
+        self._perspective_spin.setValue(0.0)
+        geo_form.addRow("透视:", self._perspective_spin)
+
+        left_layout.addWidget(geo_group)
+
+        # ── Data augmentation — flip & mix ──
+        mix_group = QGroupBox("数据增强 — 翻转与混合")
+        mix_form = QFormLayout(mix_group)
 
         self._fliplr_spin = QDoubleSpinBox()
         self._fliplr_spin.setRange(0, 1)
         self._fliplr_spin.setDecimals(1)
         self._fliplr_spin.setValue(0.5)
-        aug_form.addRow("FlipLR:", self._fliplr_spin)
+        mix_form.addRow("水平翻转:", self._fliplr_spin)
 
         self._flipud_spin = QDoubleSpinBox()
         self._flipud_spin.setRange(0, 1)
         self._flipud_spin.setDecimals(1)
         self._flipud_spin.setValue(0.0)
-        aug_form.addRow("FlipUD:", self._flipud_spin)
+        mix_form.addRow("垂直翻转:", self._flipud_spin)
 
-        left_layout.addWidget(aug_group)
+        self._mosaic_spin = QDoubleSpinBox()
+        self._mosaic_spin.setRange(0, 1)
+        self._mosaic_spin.setDecimals(1)
+        self._mosaic_spin.setValue(1.0)
+        mix_form.addRow("Mosaic:", self._mosaic_spin)
 
-        # Pose-specific params
+        self._mixup_spin = QDoubleSpinBox()
+        self._mixup_spin.setRange(0, 1)
+        self._mixup_spin.setDecimals(1)
+        self._mixup_spin.setSingleStep(0.1)
+        self._mixup_spin.setValue(0.0)
+        mix_form.addRow("MixUp:", self._mixup_spin)
+
+        self._copy_paste_spin = QDoubleSpinBox()
+        self._copy_paste_spin.setRange(0, 1)
+        self._copy_paste_spin.setDecimals(1)
+        self._copy_paste_spin.setSingleStep(0.1)
+        self._copy_paste_spin.setValue(0.0)
+        mix_form.addRow("Copy-Paste:", self._copy_paste_spin)
+
+        left_layout.addWidget(mix_group)
+
+        # ── Pose-specific params ──
         self._pose_group = QGroupBox("Pose 参数")
         pose_form = QFormLayout(self._pose_group)
 
@@ -140,6 +293,12 @@ class TrainPanel(QWidget):
         self._kpt_num_spin.setRange(1, 100)
         self._kpt_num_spin.setValue(17)
         pose_form.addRow("关键点数:", self._kpt_num_spin)
+
+        self._kpt_dim_spin = QSpinBox()
+        self._kpt_dim_spin.setRange(2, 3)
+        self._kpt_dim_spin.setValue(3)
+        self._kpt_dim_spin.setToolTip("2=xy, 3=xy+可见性")
+        pose_form.addRow("关键点维度:", self._kpt_dim_spin)
 
         self._pose_weight_spin = QDoubleSpinBox()
         self._pose_weight_spin.setRange(0, 100)
@@ -160,15 +319,29 @@ class TrainPanel(QWidget):
 
         # Buttons
         btn_layout = QHBoxLayout()
-        self._btn_start = QPushButton("开始训练")
+        self._btn_start = QPushButton(icon("start", "#1e1e2e"), "开始训练")
         self._btn_start.setStyleSheet("background-color: #a6e3a1; color: #1e1e2e; font-weight: bold;")
-        self._btn_stop = QPushButton("停止训练")
+        self._btn_start.setToolTip("开始训练模型")
+        self._btn_stop = QPushButton(icon("stop"), "停止训练")
         self._btn_stop.setEnabled(False)
+        self._btn_stop.setToolTip("停止当前训练")
+        self._btn_preview_aug = QPushButton("预览增强")
+        self._btn_preview_aug.setToolTip("预览当前数据增强参数效果")
         btn_layout.addWidget(self._btn_start)
         btn_layout.addWidget(self._btn_stop)
+        btn_layout.addWidget(self._btn_preview_aug)
         left_layout.addLayout(btn_layout)
 
+        # Epoch progress bar
+        self._epoch_progress = QProgressBar()
+        self._epoch_progress.setRange(0, 100)
+        self._epoch_progress.setValue(0)
+        self._epoch_progress.setFormat("Epoch %v / %m")
+        self._epoch_progress.setVisible(False)
+        left_layout.addWidget(self._epoch_progress)
+
         left_layout.addStretch()
+        scroll.setWidget(left)
 
         # Right: curves + log
         right = QWidget()
@@ -212,37 +385,103 @@ class TrainPanel(QWidget):
 
         # Splitter
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left)
+        splitter.addWidget(scroll)
         splitter.addWidget(right)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([350, 600])
+        splitter.setSizes([380, 600])
         layout.addWidget(splitter)
 
     def _connect_signals(self) -> None:
         self._task_combo.currentTextChanged.connect(self._on_task_changed)
+        self._preset_combo.currentTextChanged.connect(self._on_preset_changed)
         self._btn_start.clicked.connect(self._on_start)
         self._btn_stop.clicked.connect(self._on_stop)
+        self._btn_preview_aug.clicked.connect(self._on_preview_augmentation)
 
     def _on_task_changed(self, task: str) -> None:
         self._pose_group.setVisible(task == "pose")
+
+    def _on_preset_changed(self, preset_name: str) -> None:
+        """Apply a training preset to all UI fields."""
+        preset = TRAIN_PRESETS.get(preset_name)
+        if preset is None:
+            return
+        # Build a full config from defaults + preset overrides
+        defaults = TrainConfig(data_yaml="", model="", task="detect")
+        field_map = {
+            "epochs": self._epochs_spin,
+            "batch": self._batch_spin,
+            "imgsz": self._imgsz_spin,
+            "lr0": self._lr0_spin,
+            "lrf": self._lrf_spin,
+            "momentum": self._momentum_spin,
+            "weight_decay": self._weight_decay_spin,
+            "warmup_epochs": self._warmup_epochs_spin,
+            "warmup_momentum": self._warmup_momentum_spin,
+            "warmup_bias_lr": self._warmup_bias_lr_spin,
+            "hsv_h": self._hsv_h_spin,
+            "hsv_s": self._hsv_s_spin,
+            "hsv_v": self._hsv_v_spin,
+            "degrees": self._degrees_spin,
+            "translate": self._translate_spin,
+            "scale": self._scale_spin,
+            "shear": self._shear_spin,
+            "perspective": self._perspective_spin,
+            "flipud": self._flipud_spin,
+            "fliplr": self._fliplr_spin,
+            "mosaic": self._mosaic_spin,
+            "mixup": self._mixup_spin,
+            "copy_paste": self._copy_paste_spin,
+        }
+        for field_name, spin in field_map.items():
+            value = preset.get(field_name, getattr(defaults, field_name))
+            spin.setValue(value)
+        logger.info("Applied training preset: %s", preset_name)
 
     def _on_start(self) -> None:
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._log_text.clear()
         self._epoch_data.clear()
+        total_epochs = self._epochs_spin.value()
+        self._epoch_progress.setRange(0, total_epochs)
+        self._epoch_progress.setValue(0)
+        self._epoch_progress.setVisible(True)
 
     def _on_stop(self) -> None:
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
         self.stop_requested.emit()
 
+    def _on_preview_augmentation(self) -> None:
+        """Emit augmentation params for preview."""
+        params = self.get_augmentation_params()
+        self.preview_augmentation_requested.emit(params)
+
+    def get_augmentation_params(self) -> dict:
+        """Get current data augmentation parameters as dict."""
+        return {
+            "hsv_h": self._hsv_h_spin.value(),
+            "hsv_s": self._hsv_s_spin.value(),
+            "hsv_v": self._hsv_v_spin.value(),
+            "degrees": self._degrees_spin.value(),
+            "translate": self._translate_spin.value(),
+            "scale": self._scale_spin.value(),
+            "shear": self._shear_spin.value(),
+            "perspective": self._perspective_spin.value(),
+            "flipud": self._flipud_spin.value(),
+            "fliplr": self._fliplr_spin.value(),
+            "mosaic": self._mosaic_spin.value(),
+            "mixup": self._mixup_spin.value(),
+            "copy_paste": self._copy_paste_spin.value(),
+        }
+
     def get_train_config(self, data_yaml: str, model: str | None = None) -> TrainConfig:
         """Build TrainConfig from current UI values."""
-        return TrainConfig(
+        config = TrainConfig(
             data_yaml=data_yaml,
-            model=model or self._model_combo.currentText(),
+            model=model or self._resolve_model_path(),
             task=self._task_combo.currentText(),
             epochs=self._epochs_spin.value(),
             batch=self._batch_spin.value(),
@@ -250,13 +489,33 @@ class TrainPanel(QWidget):
             device=self._device_combo.currentText(),
             optimizer=self._optimizer_combo.currentText(),
             lr0=self._lr0_spin.value(),
-            mosaic=self._mosaic_spin.value(),
-            fliplr=self._fliplr_spin.value(),
+            lrf=self._lrf_spin.value(),
+            momentum=self._momentum_spin.value(),
+            weight_decay=self._weight_decay_spin.value(),
+            warmup_epochs=self._warmup_epochs_spin.value(),
+            warmup_momentum=self._warmup_momentum_spin.value(),
+            warmup_bias_lr=self._warmup_bias_lr_spin.value(),
+            hsv_h=self._hsv_h_spin.value(),
+            hsv_s=self._hsv_s_spin.value(),
+            hsv_v=self._hsv_v_spin.value(),
+            degrees=self._degrees_spin.value(),
+            translate=self._translate_spin.value(),
+            scale=self._scale_spin.value(),
+            shear=self._shear_spin.value(),
+            perspective=self._perspective_spin.value(),
             flipud=self._flipud_spin.value(),
+            fliplr=self._fliplr_spin.value(),
+            mosaic=self._mosaic_spin.value(),
+            mixup=self._mixup_spin.value(),
+            copy_paste=self._copy_paste_spin.value(),
             pose=self._pose_weight_spin.value(),
             kobj=self._kobj_spin.value(),
             resume=self._resume_check.isChecked(),
         )
+        if self._task_combo.currentText() == "pose":
+            config.kpt_shape = [self._kpt_num_spin.value(), self._kpt_dim_spin.value()]
+        logger.info("Training config: epochs=%d, batch=%d, model=%s", config.epochs, config.batch, config.model)
+        return config
 
     def get_val_ratio(self) -> float:
         """Get validation split ratio."""
@@ -269,7 +528,10 @@ class TrainPanel(QWidget):
     def update_epoch(self, metrics: dict) -> None:
         """Update curves and log with epoch metrics."""
         self._epoch_data.append(metrics)
-        epoch = metrics.get("epoch", len(self._epoch_data) - 1)
+        epoch = metrics.get("epoch", len(self._epoch_data))
+
+        # Update progress bar
+        self._epoch_progress.setValue(epoch)
 
         # Log line
         parts = [f"Epoch {epoch}"]
@@ -292,6 +554,7 @@ class TrainPanel(QWidget):
         """Handle training completion."""
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
+        self._epoch_progress.setVisible(False)
         self.append_log("--- 训练完成 ---")
         if metrics:
             for k, v in metrics.items():
@@ -301,4 +564,46 @@ class TrainPanel(QWidget):
         """Handle training error."""
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
+        self._epoch_progress.setVisible(False)
         self.append_log(f"--- 训练失败: {error_msg} ---")
+
+    def _resolve_model_path(self) -> str:
+        """Resolve model combo text to actual path (handles registered models)."""
+        text = self._model_combo.currentText()
+        return self._registered_model_paths.get(text, text)
+
+    def set_registered_models(self, models) -> None:
+        """Update combo with registered models for finetune.
+
+        Args:
+            models: list of ModelInfo objects with .name and .path attributes.
+        """
+        # Remember current selection
+        current = self._model_combo.currentText()
+
+        # Remove old registered entries (after separator)
+        separator_idx = -1
+        for i in range(self._model_combo.count()):
+            if self._model_combo.itemText(i) == "──────────":
+                separator_idx = i
+                break
+        if separator_idx >= 0:
+            while self._model_combo.count() > separator_idx:
+                self._model_combo.removeItem(separator_idx)
+
+        self._registered_model_paths.clear()
+
+        if models:
+            self._model_combo.addItem("──────────")
+            # Make separator unselectable
+            idx = self._model_combo.count() - 1
+            self._model_combo.model().item(idx).setEnabled(False)
+            for m in models:
+                display = f"[已训练] {m.name}"
+                self._registered_model_paths[display] = m.path
+                self._model_combo.addItem(display)
+
+        # Restore selection
+        restore_idx = self._model_combo.findText(current)
+        if restore_idx >= 0:
+            self._model_combo.setCurrentIndex(restore_idx)

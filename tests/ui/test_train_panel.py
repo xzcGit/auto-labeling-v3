@@ -86,3 +86,35 @@ class TestTrainPanel:
         panel = TrainPanel()
         panel._task_combo.setCurrentText("detect")
         assert panel._pose_group.isHidden()
+
+    def test_has_preset_combo(self, qapp):
+        from src.ui.train_panel import TrainPanel
+
+        panel = TrainPanel()
+        assert panel._preset_combo is not None
+        assert panel._preset_combo.count() >= 3
+
+    def test_preset_fast_changes_epochs(self, qapp):
+        from src.ui.train_panel import TrainPanel
+
+        panel = TrainPanel()
+        panel._preset_combo.setCurrentText("快速验证")
+        assert panel._epochs_spin.value() == 10
+        assert panel._batch_spin.value() == 32
+
+    def test_preset_accurate_changes_epochs(self, qapp):
+        from src.ui.train_panel import TrainPanel
+
+        panel = TrainPanel()
+        panel._preset_combo.setCurrentText("高精度")
+        assert panel._epochs_spin.value() == 300
+        assert panel._batch_spin.value() == 8
+
+    def test_preset_default_restores(self, qapp):
+        from src.ui.train_panel import TrainPanel
+
+        panel = TrainPanel()
+        panel._preset_combo.setCurrentText("快速验证")
+        panel._preset_combo.setCurrentText("默认")
+        assert panel._epochs_spin.value() == 100
+        assert panel._batch_spin.value() == 16

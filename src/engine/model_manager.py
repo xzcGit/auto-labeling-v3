@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -72,7 +75,9 @@ class ModelRegistry:
         try:
             data = json.loads(self._registry_path.read_text(encoding="utf-8"))
             self._models = [ModelInfo.from_dict(m) for m in data.get("models", [])]
-        except (json.JSONDecodeError, KeyError):
+            logger.info("Registry loaded: %d models from %s", len(self._models), self._registry_path)
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning("Failed to load model registry from %s: %s", self._registry_path, e)
             self._models = []
 
     def save(self) -> None:

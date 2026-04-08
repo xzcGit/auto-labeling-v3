@@ -88,16 +88,39 @@ class ProjectManager:
         image_dir: str = "images",
         classes: list[str] | None = None,
     ) -> ProjectManager:
-        """Create a new project."""
+        """Create a new project.
+
+        Args:
+            project_dir: Path where the project will be created.
+            name: Project name.
+            image_dir: Either a relative subdir name (created inside project_dir)
+                       or an absolute path to an existing image directory.
+            classes: Initial class list.
+        """
         project_dir = Path(project_dir)
         project_dir.mkdir(parents=True, exist_ok=True)
-        (project_dir / image_dir).mkdir(exist_ok=True)
+
+        image_path = Path(image_dir)
+        if image_path.is_absolute():
+            # External image directory — store relative to project or absolute
+            if not image_path.exists():
+                image_path.mkdir(parents=True, exist_ok=True)
+            try:
+                rel = image_path.relative_to(project_dir)
+                image_dir_str = str(rel)
+            except ValueError:
+                # Outside project dir — store absolute path
+                image_dir_str = str(image_path)
+        else:
+            image_dir_str = image_dir
+            (project_dir / image_dir_str).mkdir(exist_ok=True)
+
         label_dir = "labels"
         (project_dir / label_dir).mkdir(exist_ok=True)
 
         config = ProjectConfig(
             name=name,
-            image_dir=image_dir,
+            image_dir=image_dir_str,
             label_dir=label_dir,
             classes=classes or [],
             created_at=datetime.now().isoformat(timespec="seconds"),
@@ -127,7 +150,9 @@ class ProjectManager:
 
     def list_images(self) -> list[Path]:
         """List all image files in the image directory, sorted by name."""
-        img_dir = self.project_dir / self.config.image_dir
+        img_dir = Path(self.config.image_dir)
+        if not img_dir.is_absolute():
+            img_dir = self.project_dir / img_dir
         if not img_dir.exists():
             return []
         return sorted(

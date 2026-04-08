@@ -50,7 +50,7 @@ class TestImageCache:
 
         img_path = tmp_path / "cached.png"
         _make_test_image(img_path)
-        cache = ImageCache(max_size=5)
+        cache = ImageCache(max_count=5)
         p1 = cache.get(img_path)
         p2 = cache.get(img_path)
         assert p1 is not None
@@ -59,7 +59,7 @@ class TestImageCache:
     def test_cache_evicts_oldest(self, qapp, tmp_path):
         from src.utils.image import ImageCache
 
-        cache = ImageCache(max_size=2)
+        cache = ImageCache(max_count=2)
         paths = []
         for i in range(3):
             p = tmp_path / f"img{i}.png"
@@ -76,11 +76,66 @@ class TestImageCache:
 
         img_path = tmp_path / "clear.png"
         _make_test_image(img_path)
-        cache = ImageCache(max_size=5)
+        cache = ImageCache(max_count=5)
         cache.get(img_path)
-        assert len(cache._cache) == 1
+        assert cache.size == 1
         cache.clear()
-        assert len(cache._cache) == 0
+        assert cache.size == 0
+
+    def test_memory_tracking(self, qapp, tmp_path):
+        from src.utils.image import ImageCache
+
+        img_path = tmp_path / "mem.png"
+        _make_test_image(img_path, 200, 100)
+        cache = ImageCache(max_count=10)
+        cache.get(img_path)
+        # 200*100*4 = 80000 bytes ~= 0.076 MB
+        assert cache.memory_usage_mb > 0
+        assert cache.size == 1
+
+    def test_memory_limit_eviction(self, qapp, tmp_path):
+        from src.utils.image import ImageCache
+
+        # Very low memory limit: 0.01 MB = ~10KB
+        cache = ImageCache(max_count=100, max_memory_mb=0.01)
+        paths = []
+        for i in range(5):
+            p = tmp_path / f"big{i}.png"
+            _make_test_image(p, 200, 100)  # ~78KB each
+            paths.append(p)
+
+        for p in paths:
+            cache.get(p)
+        # Should have evicted most images due to memory limit
+        assert cache.size < 5
+
+    def test_preload(self, qapp, tmp_path):
+        from src.utils.image import ImageCache
+
+        cache = ImageCache(max_count=10)
+        paths = []
+        for i in range(3):
+            p = tmp_path / f"pre{i}.png"
+            _make_test_image(p)
+            paths.append(p)
+
+        cache.preload(paths)
+        assert cache.size == 3
+        # All should be cache hits now
+        for p in paths:
+            assert str(p) in cache._cache
+
+    def test_invalidate_updates_memory(self, qapp, tmp_path):
+        from src.utils.image import ImageCache
+
+        img_path = tmp_path / "inv.png"
+        _make_test_image(img_path, 100, 100)
+        cache = ImageCache(max_count=10)
+        cache.get(img_path)
+        assert cache.memory_usage_mb > 0
+        cache.invalidate(img_path)
+        assert cache.size == 0
+        assert cache.memory_usage_mb == 0
 
 
 class TestGetImageSize:

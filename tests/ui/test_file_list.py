@@ -108,3 +108,89 @@ class TestFileListWidget:
         idx, total = widget.get_index_info()
         assert idx == 3  # 1-based
         assert total == 5
+
+    def test_extended_selection_mode(self, qapp):
+        from src.ui.file_list import FileListWidget
+        from PyQt5.QtWidgets import QAbstractItemView
+
+        widget = FileListWidget()
+        assert widget.selectionMode() == QAbstractItemView.ExtendedSelection
+
+    def test_get_selected_paths(self, qapp):
+        from src.ui.file_list import FileListWidget
+
+        widget = FileListWidget()
+        paths = [Path(f"/imgs/img{i}.jpg") for i in range(5)]
+        widget.set_image_paths(paths)
+        # Select multiple items
+        widget.item(1).setSelected(True)
+        widget.item(3).setSelected(True)
+        selected = widget.get_selected_paths()
+        assert len(selected) == 2
+
+    def test_batch_confirm_signal(self, qapp):
+        from src.ui.file_list import FileListWidget
+
+        widget = FileListWidget()
+        results = []
+        widget.batch_confirm_requested.connect(lambda p: results.append(p))
+        # Simulate signal emission
+        widget.batch_confirm_requested.emit([Path("/img1.jpg")])
+        assert len(results) == 1
+
+    def test_batch_delete_signal(self, qapp):
+        from src.ui.file_list import FileListWidget
+
+        widget = FileListWidget()
+        results = []
+        widget.batch_delete_requested.connect(lambda p: results.append(p))
+        widget.batch_delete_requested.emit([Path("/img1.jpg")])
+        assert len(results) == 1
+
+    def test_class_filter(self, qapp):
+        from src.ui.file_list import FileListWidget
+
+        widget = FileListWidget()
+        paths = [Path(f"/imgs/img{i}.jpg") for i in range(4)]
+        widget.set_image_paths(paths)
+
+        # Set classes for images
+        widget.set_image_classes(paths[0], {"cat", "dog"})
+        widget.set_image_classes(paths[1], {"cat"})
+        widget.set_image_classes(paths[2], {"dog"})
+        widget.set_image_classes(paths[3], set())  # no annotations
+
+        # Filter by "cat"
+        widget.set_class_filter("cat")
+        visible = [i for i in range(widget.count()) if not widget.item(i).isHidden()]
+        assert len(visible) == 2  # img0 and img1
+
+        # Filter by "dog"
+        widget.set_class_filter("dog")
+        visible = [i for i in range(widget.count()) if not widget.item(i).isHidden()]
+        assert len(visible) == 2  # img0 and img2
+
+        # Clear filter
+        widget.set_class_filter(None)
+        visible = [i for i in range(widget.count()) if not widget.item(i).isHidden()]
+        assert len(visible) == 4
+
+    def test_combined_status_and_class_filter(self, qapp):
+        from src.ui.file_list import FileListWidget
+
+        widget = FileListWidget()
+        paths = [Path(f"/imgs/img{i}.jpg") for i in range(3)]
+        widget.set_image_paths(paths)
+
+        widget.set_status(paths[0], "confirmed")
+        widget.set_status(paths[1], "pending")
+        widget.set_status(paths[2], "confirmed")
+        widget.set_image_classes(paths[0], {"cat"})
+        widget.set_image_classes(paths[1], {"cat"})
+        widget.set_image_classes(paths[2], {"dog"})
+
+        # Filter: confirmed + cat
+        widget.set_filter("confirmed")
+        widget.set_class_filter("cat")
+        visible = [i for i in range(widget.count()) if not widget.item(i).isHidden()]
+        assert len(visible) == 1  # only img0
