@@ -8,3 +8,5 @@ build/
 .eggs/
 *.pt
 .superpowers/
+/docs/
+.codex
