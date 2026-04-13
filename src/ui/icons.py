@@ -189,6 +189,20 @@ _SVGS: dict[str, str] = {
         '<path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3'
         'm0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>'
     ),
+    # Batch visible operations
+    "confirm_visible": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M16 6L9 17l-4-4"/>'
+        '<rect x="1" y="1" width="22" height="22" rx="3" stroke-dasharray="4 2"/></svg>'
+    ),
+    "revert_visible": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<line x1="18" y1="6" x2="6" y2="18"/>'
+        '<line x1="6" y1="6" x2="18" y2="18"/>'
+        '<rect x="1" y="1" width="22" height="22" rx="3" stroke-dasharray="4 2"/></svg>'
+    ),
     # Cancel
     "cancel": (
         '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2"'

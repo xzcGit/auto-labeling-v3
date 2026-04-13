@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QComboBox,
     QAction,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QPoint
 
@@ -86,6 +87,14 @@ class LabelPanel(QWidget):
         self._btn_confirm_all = QPushButton(icon("check_all"), "全部确认")
         self._btn_confirm_all.setToolTip("确认当前图片所有标注 (Ctrl+Space)")
         self._toolbar.addWidget(self._btn_confirm_all)
+
+        self._btn_confirm_visible = QPushButton(icon("confirm_visible"), "确认可见预标注")
+        self._btn_confirm_visible.setToolTip("确认当前可见图片的所有未确认标注")
+        self._toolbar.addWidget(self._btn_confirm_visible)
+
+        self._btn_revert_visible = QPushButton(icon("revert_visible"), "撤销可见预标注")
+        self._btn_revert_visible.setToolTip("删除当前可见图片的所有未确认标注")
+        self._toolbar.addWidget(self._btn_revert_visible)
 
         self._toolbar.addSeparator()
 
@@ -179,6 +188,8 @@ class LabelPanel(QWidget):
 
         # Confirm all
         self._btn_confirm_all.clicked.connect(self._confirm_all)
+        self._btn_confirm_visible.clicked.connect(self._batch_confirm_visible)
+        self._btn_revert_visible.clicked.connect(self._batch_revert_visible)
 
         # Auto-label buttons
         self._btn_auto_single.clicked.connect(self.auto_label_single_requested.emit)
@@ -752,3 +763,92 @@ class LabelPanel(QWidget):
         self._update_project_stats()
         self.status_changed.emit(f"批量删除标注: {count} 张图片")
         logger.info("Batch deleted annotations for %d images", count)
+
+    def _collect_unconfirmed(self, visible_paths: list[Path]):
+        """Load annotations for visible paths, return those with unconfirmed items.
+
+        Returns (affected: list[(img_path, label_path, ia)], total_unconfirmed: int).
+        """
+        affected = []
+        total = 0
+        for img_path in visible_paths:
+            label_path = self._project.label_path_for(img_path)
+            ia = load_annotation(label_path)
+            if ia:
+                unconfirmed = sum(1 for a in ia.annotations if not a.confirmed)
+                if unconfirmed > 0:
+                    affected.append((img_path, label_path, ia))
+                    total += unconfirmed
+        return affected, total
+
+    def _batch_confirm_visible(self) -> None:
+        """Confirm all unconfirmed annotations in currently visible images."""
+        if not self._project:
+            return
+        visible_paths = self._file_list.get_visible_paths()
+        if not visible_paths:
+            return
+
+        affected, total = self._collect_unconfirmed(visible_paths)
+        if total == 0:
+            self.status_changed.emit("没有需要确认的预标注")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认可见预标注",
+            f"将确认 {len(affected)} 张图片中的 {total} 个未确认标注，是否继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._save_current()
+        count = 0
+        for img_path, label_path, ia in affected:
+            for ann in ia.annotations:
+                if not ann.confirmed:
+                    ann.confirmed = True
+            save_annotation(ia, label_path)
+            self._file_list.set_status(img_path, ia.status)
+            count += 1
+
+        if self._current_image_path and self._current_image_path in visible_paths:
+            self._on_image_selected(self._current_image_path)
+        self._update_project_stats()
+        self.status_changed.emit(f"已确认可见预标注: {count} 张图片")
+        logger.info("Batch confirmed visible unconfirmed annotations for %d images", count)
+
+    def _batch_revert_visible(self) -> None:
+        """Delete all unconfirmed annotations in currently visible images."""
+        if not self._project:
+            return
+        visible_paths = self._file_list.get_visible_paths()
+        if not visible_paths:
+            return
+
+        affected, total = self._collect_unconfirmed(visible_paths)
+        if total == 0:
+            self.status_changed.emit("没有需要撤销的预标注")
+            return
+
+        reply = QMessageBox.question(
+            self, "撤销可见预标注",
+            f"将删除 {len(affected)} 张图片中的 {total} 个未确认标注，此操作不可撤销，是否继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._save_current()
+        count = 0
+        for img_path, label_path, ia in affected:
+            ia.annotations = [a for a in ia.annotations if a.confirmed]
+            save_annotation(ia, label_path)
+            self._file_list.set_status(img_path, ia.status)
+            count += 1
+
+        if self._current_image_path and self._current_image_path in visible_paths:
+            self._on_image_selected(self._current_image_path)
+        self._update_project_stats()
+        self.status_changed.emit(f"已撤销可见预标注: {count} 张图片")
+        logger.info("Batch reverted visible unconfirmed annotations for %d images", count)

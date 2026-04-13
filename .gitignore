@@ -10,3 +10,5 @@ build/
 .superpowers/
 /docs/
 .codex
+CLAUDE.md
+.ace-tool/

@@ -204,6 +204,17 @@ class FileListWidget(QListWidget):
                 paths.append(Path(path_str))
         return paths
 
+    def get_visible_paths(self) -> list[Path]:
+        """Get paths of all currently visible (non-hidden) items."""
+        paths = []
+        for i in range(self.count()):
+            item = self.item(i)
+            if not item.isHidden():
+                path_str = item.data(Qt.UserRole)
+                if path_str:
+                    paths.append(Path(path_str))
+        return paths
+
     def contextMenuEvent(self, event) -> None:
         """Show right-click context menu for file list items."""
         item = self.itemAt(event.pos())
