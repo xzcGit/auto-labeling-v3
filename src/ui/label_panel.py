@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections import OrderedDict
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -48,11 +49,13 @@ class LabelPanel(QWidget):
         self._project: ProjectManager | None = None
         self._current_image_path: Path | None = None
         self._current_annotation: ImageAnnotation | None = None
-        self._undo_stacks: dict[str, UndoStack] = {}  # per-image undo
+        self._undo_stacks: OrderedDict[str, UndoStack] = OrderedDict()  # per-image undo, LRU
         self._last_class: str | None = None
         self._config_path = config_path
         self._clipboard: list[dict] | None = None  # copied annotations as dicts
         self._image_cache = ImageCache(max_count=16, max_memory_mb=512.0)
+        self._stats_cache: dict = {}  # cached project stats
+        self._prev_annotations_snapshot: list[tuple] | None = None  # immutable stats snapshot
 
         self._init_ui()
         self._connect_signals()
@@ -248,7 +251,7 @@ class LabelPanel(QWidget):
             self._file_list.setCurrentRow(0)
 
         logger.info("Project loaded: %s (%d images)", project.config.name, len(images))
-        self._update_project_stats()
+        self._init_stats_cache()
 
     # ── Tool management ────────────────────────────────────────
 
@@ -302,9 +305,13 @@ class LabelPanel(QWidget):
             if key not in self._undo_stacks:
                 self._undo_stacks[key] = UndoStack()
                 self._undo_stacks[key].push(self._current_annotation.to_dict())
+            else:
+                self._undo_stacks.move_to_end(key)
+            while len(self._undo_stacks) > self._UNDO_MAX_IMAGES:
+                self._undo_stacks.popitem(last=False)
 
-            self._update_project_stats()
-            self._update_lock_state()
+            # Snapshot annotations for incremental stats on save
+            self._prev_annotations_snapshot = self._stats_snapshot(self._current_annotation.annotations)
 
     def _preload_neighbors(self, current: Path) -> None:
         """Preload images adjacent to current for smoother navigation."""
@@ -328,13 +335,19 @@ class LabelPanel(QWidget):
         if not self._project or not self._current_image_path or not self._current_annotation:
             return
         # Sync canvas annotations back
-        self._current_annotation.annotations = list(self._canvas._annotations)
+        self._current_annotation.annotations = list(self._canvas.annotations)
         self._current_annotation.image_tags = self._ann_panel.get_image_tags()
         label_path = self._project.label_path_for(self._current_image_path)
         save_annotation(self._current_annotation, label_path)
         logger.debug("Saved annotations for %s", self._current_image_path.name)
         # Update file list status
         self._file_list.set_status(self._current_image_path, self._current_annotation.status)
+        # Incremental stats update
+        old_snap = self._prev_annotations_snapshot or []
+        new_snap = self._stats_snapshot(self._current_annotation.annotations)
+        if old_snap != new_snap:
+            self._update_stats_incremental(old_snap, new_snap)
+            self._prev_annotations_snapshot = new_snap
 
     # ── Annotation events ──────────────────────────────────────
 
@@ -344,126 +357,91 @@ class LabelPanel(QWidget):
     def _on_annotation_created(self, ann) -> None:
         self._push_undo()
         self._sync_annotations_to_panel()
-        self._update_lock_state()
 
     def _on_annotation_modified(self, ann_id: str) -> None:
         self._push_undo()
         self._sync_annotations_to_panel()
 
     def _on_annotation_deleted(self, ann_id: str) -> None:
-        self._canvas._annotations = [a for a in self._canvas._annotations if a.id != ann_id]
-        self._canvas._selected_id = None
-        self._canvas.update()
+        self._canvas.remove_annotation(ann_id)
         self._push_undo()
-        self._sync_annotations_to_panel()
-        self._update_lock_state()
         self._sync_annotations_to_panel()
 
     def _on_annotations_changed(self) -> None:
         self._sync_annotations_to_panel()
 
-    def _on_class_requested(self, px: float, py: float) -> None:
-        """Show class picker and create annotation.
-
-        Allows selecting existing class or typing a new one (like labelimg).
-        New classes are automatically added to the project.
-        """
+    def _show_class_picker(self, default_class: str | None, px: float, py: float) -> str | None:
+        """Show class picker popup and handle new class creation. Returns class name or None."""
         if not self._project:
-            return
+            return None
         classes = self._project.config.classes
-        colors = {}
-        for cls in classes:
-            colors[cls] = self._project.config.get_class_color(cls)
+        colors = {cls: self._project.config.get_class_color(cls) for cls in classes}
 
         picker = ClassPickerPopup(
             classes=classes,
             colors=colors,
-            default_class=self._last_class,
+            default_class=default_class,
             parent=self,
         )
         global_pos = self._canvas.mapToGlobal(QPoint(int(px), int(py)))
         picker.move(global_pos)
-        if picker.exec_():
-            cls_name = picker.get_selected_class()
-            if cls_name is None:
-                self._clear_draw_state()
-                return
+        if not picker.exec_():
+            return None
 
-            # If user typed a new class, add it to the project
-            if picker.is_new_class():
-                self._project.add_class(cls_name)
-                self._project.save()
-                # Refresh colors
-                new_color = self._project.config.get_class_color(cls_name)
-                colors[cls_name] = new_color
-                self._canvas.set_class_colors(colors)
-                self._ann_panel.set_class_colors(colors)
-                self._ann_panel.set_classes(self._project.config.classes)
+        cls_name = picker.get_selected_class()
+        if cls_name is None:
+            return None
 
-            cls_id = self._project.config.get_class_id(cls_name)
-            self._last_class = cls_name
-            if self._canvas.tool_mode == "draw_bbox":
-                self._canvas.create_bbox_from_draw(cls_name, cls_id)
-            elif self._canvas.tool_mode == "draw_keypoint":
-                self._canvas.create_keypoint_at(cls_name, cls_id)
-        else:
+        if picker.is_new_class():
+            self._project.add_class(cls_name)
+            self._project.save()
+            colors[cls_name] = self._project.config.get_class_color(cls_name)
+            self._canvas.set_class_colors(colors)
+            self._ann_panel.set_class_colors(colors)
+            self._ann_panel.set_classes(self._project.config.classes)
+
+        return cls_name
+
+    def _on_class_requested(self, px: float, py: float) -> None:
+        """Show class picker and create annotation."""
+        cls_name = self._show_class_picker(self._last_class, px, py)
+        if cls_name is None:
             self._clear_draw_state()
+            return
+
+        cls_id = self._project.config.get_class_id(cls_name)
+        self._last_class = cls_name
+        if self._canvas.tool_mode == "draw_bbox":
+            self._canvas.create_bbox_from_draw(cls_name, cls_id)
+        elif self._canvas.tool_mode == "draw_keypoint":
+            self._canvas.create_keypoint_at(cls_name, cls_id)
 
     def _clear_draw_state(self) -> None:
         """Clear canvas draw state after cancelled operation."""
-        self._canvas._draw_start = None
-        self._canvas._draw_current = None
-        self._canvas.update()
+        self._canvas.clear_draw_state()
 
     def _on_class_change_requested(self, ann_id: str, px: float, py: float) -> None:
         """Show class picker to change an annotation's class."""
-        if not self._project:
-            return
         ann = None
-        for a in self._canvas._annotations:
+        for a in self._canvas.annotations:
             if a.id == ann_id:
                 ann = a
                 break
         if ann is None:
             return
 
-        classes = self._project.config.classes
-        colors = {}
-        for cls in classes:
-            colors[cls] = self._project.config.get_class_color(cls)
+        cls_name = self._show_class_picker(ann.class_name, px, py)
+        if cls_name is None or cls_name == ann.class_name:
+            return
 
-        picker = ClassPickerPopup(
-            classes=classes,
-            colors=colors,
-            default_class=ann.class_name,
-            parent=self,
-        )
-        global_pos = self._canvas.mapToGlobal(QPoint(int(px), int(py)))
-        picker.move(global_pos)
-        if picker.exec_():
-            cls_name = picker.get_selected_class()
-            if cls_name is None:
-                return
-
-            # If user typed a new class, add to project
-            if picker.is_new_class():
-                self._project.add_class(cls_name)
-                self._project.save()
-                new_color = self._project.config.get_class_color(cls_name)
-                colors[cls_name] = new_color
-                self._canvas.set_class_colors(colors)
-                self._ann_panel.set_class_colors(colors)
-                self._ann_panel.set_classes(self._project.config.classes)
-
-            if cls_name != ann.class_name:
-                ann.class_name = cls_name
-                ann.class_id = self._project.config.get_class_id(cls_name)
-                self._push_undo()
-                self._canvas.update()
-                self._sync_annotations_to_panel()
+        ann.class_name = cls_name
+        ann.class_id = self._project.config.get_class_id(cls_name)
+        self._push_undo()
+        self._canvas.update()
+        self._sync_annotations_to_panel()
 
     def _sync_annotations_to_panel(self) -> None:
-        self._ann_panel.set_annotations(list(self._canvas._annotations))
+        self._ann_panel.set_annotations(list(self._canvas.annotations))
         self._emit_status()
 
     def _emit_status(self) -> None:
@@ -471,8 +449,8 @@ class LabelPanel(QWidget):
         if not self._current_image_path:
             return
         idx, total = self._file_list.get_index_info()
-        n_ann = len(self._canvas._annotations)
-        n_confirmed = sum(1 for a in self._canvas._annotations if a.confirmed)
+        n_ann = len(self._canvas.annotations)
+        n_confirmed = sum(1 for a in self._canvas.annotations if a.confirmed)
         n_pending = n_ann - n_confirmed
         parts = [
             self._current_image_path.name,
@@ -484,7 +462,7 @@ class LabelPanel(QWidget):
         self.status_changed.emit(" | ".join(parts))
 
     def _compute_project_stats(self) -> dict:
-        """Compute project-level annotation statistics."""
+        """Compute project-level annotation statistics (full scan)."""
         if not self._project:
             return {}
         stats = {
@@ -510,18 +488,61 @@ class LabelPanel(QWidget):
                 stats["class_counts"][ann.class_name] = stats["class_counts"].get(ann.class_name, 0) + 1
         return stats
 
+    def _init_stats_cache(self) -> None:
+        """Full scan to initialize stats cache. Called once on project load."""
+        self._stats_cache = self._compute_project_stats()
+        self._ann_panel.set_project_stats(self._stats_cache)
+
+    def _update_stats_incremental(self, old_snap: list[tuple], new_snap: list[tuple]) -> None:
+        """Incrementally update cached stats. Each snapshot is [(class_name, confirmed), ...]."""
+        if not self._stats_cache:
+            return
+        had_old = len(old_snap) > 0
+        has_new = len(new_snap) > 0
+
+        # labeled_images delta
+        if had_old and not has_new:
+            self._stats_cache["labeled_images"] -= 1
+        elif not had_old and has_new:
+            self._stats_cache["labeled_images"] += 1
+
+        # confirmed_images delta
+        old_all_confirmed = had_old and all(c for _, c in old_snap)
+        new_all_confirmed = has_new and all(c for _, c in new_snap)
+        if old_all_confirmed and not new_all_confirmed:
+            self._stats_cache["confirmed_images"] -= 1
+        elif not old_all_confirmed and new_all_confirmed:
+            self._stats_cache["confirmed_images"] += 1
+
+        # total_annotations and class_counts delta
+        for cls, _ in old_snap:
+            self._stats_cache["total_annotations"] -= 1
+            self._stats_cache["class_counts"][cls] = self._stats_cache["class_counts"].get(cls, 1) - 1
+            if self._stats_cache["class_counts"][cls] <= 0:
+                del self._stats_cache["class_counts"][cls]
+
+        for cls, _ in new_snap:
+            self._stats_cache["total_annotations"] += 1
+            self._stats_cache["class_counts"][cls] = self._stats_cache["class_counts"].get(cls, 0) + 1
+
+        self._ann_panel.set_project_stats(self._stats_cache)
+
+    @staticmethod
+    def _stats_snapshot(anns) -> list[tuple]:
+        """Capture immutable stats-relevant data from annotations."""
+        return [(a.class_name, a.confirmed) for a in anns]
+
     def _update_project_stats(self) -> None:
-        """Recompute and update project stats in the panel."""
-        self._ann_panel.set_project_stats(self._compute_project_stats())
+        """Recompute and update project stats in the panel (full scan fallback)."""
+        self._init_stats_cache()
 
     def _confirm_all(self) -> None:
         """Confirm all annotations on current image."""
-        for ann in self._canvas._annotations:
+        for ann in self._canvas.annotations:
             ann.confirmed = True
         self._push_undo()
         self._canvas.update()
         self._sync_annotations_to_panel()
-        self._update_lock_state()
 
     # ── Copy / Paste ──────────────────────────────────────────
 
@@ -534,7 +555,7 @@ class LabelPanel(QWidget):
 
     def _on_annotation_copied(self, ann_id: str) -> None:
         """Handle copy via right-click menu."""
-        for ann in self._canvas._annotations:
+        for ann in self._canvas.annotations:
             if ann.id == ann_id:
                 self._clipboard = [ann.to_dict()]
                 logger.debug("Copied annotation via menu: %s", ann.class_name)
@@ -542,40 +563,37 @@ class LabelPanel(QWidget):
 
     def _paste_annotation(self) -> None:
         """Paste clipboard annotations onto current image."""
-        if not self._clipboard or self._canvas._locked:
+        if not self._clipboard or self._canvas.is_locked:
             return
         import uuid as _uuid
+        new_anns = []
         for ann_dict in self._clipboard:
             new_dict = dict(ann_dict)
             new_dict["id"] = str(_uuid.uuid4())
             new_dict["confirmed"] = False
-            new_ann = Annotation.from_dict(new_dict)
-            self._canvas._annotations.append(new_ann)
+            new_anns.append(Annotation.from_dict(new_dict))
+        self._canvas.add_annotations(new_anns)
         self._push_undo()
-        self._canvas.update()
         self._sync_annotations_to_panel()
         logger.debug("Pasted %d annotations", len(self._clipboard))
 
-    # ── Lock state ────────────────────────────────────────────
-
-    def _update_lock_state(self) -> None:
-        """Lock canvas when all annotations are confirmed."""
-        if not self._current_annotation or not self._canvas:
-            return
-        anns = self._canvas._annotations
-        locked = len(anns) > 0 and all(a.confirmed for a in anns)
-        self._canvas.set_locked(locked)
-
     # ── Undo/Redo ──────────────────────────────────────────────
+
+    _UNDO_MAX_IMAGES = 20
 
     def _push_undo(self) -> None:
         if not self._current_image_path or not self._current_annotation:
             return
-        self._current_annotation.annotations = list(self._canvas._annotations)
+        self._current_annotation.annotations = list(self._canvas.annotations)
         key = str(self._current_image_path)
         if key not in self._undo_stacks:
             self._undo_stacks[key] = UndoStack()
+        else:
+            self._undo_stacks.move_to_end(key)
         self._undo_stacks[key].push(self._current_annotation.to_dict())
+        # Evict oldest stacks if over limit
+        while len(self._undo_stacks) > self._UNDO_MAX_IMAGES:
+            self._undo_stacks.popitem(last=False)
 
     def undo(self) -> None:
         if not self._current_image_path:
@@ -646,7 +664,6 @@ class LabelPanel(QWidget):
                 self._push_undo()
                 self._canvas.update()
                 self._sync_annotations_to_panel()
-                self._update_lock_state()
         elif key == Qt.Key_Delete:
             ann = self._canvas.get_selected_annotation()
             if ann:
@@ -701,10 +718,8 @@ class LabelPanel(QWidget):
 
     def add_auto_annotations(self, annotations: list) -> None:
         """Add auto-label predictions to current image (unconfirmed)."""
-        for ann in annotations:
-            self._canvas._annotations.append(ann)
+        self._canvas.add_annotations(annotations)
         self._push_undo()
-        self._canvas.update()
         self._sync_annotations_to_panel()
 
     def get_unlabeled_image_paths(self) -> list[Path]:
@@ -731,15 +746,16 @@ class LabelPanel(QWidget):
             label_path = self._project.label_path_for(img_path)
             ia = load_annotation(label_path)
             if ia and ia.annotations:
+                old_snap = self._stats_snapshot(ia.annotations)
                 for ann in ia.annotations:
                     ann.confirmed = True
                 save_annotation(ia, label_path)
                 self._file_list.set_status(img_path, ia.status)
+                self._update_stats_incremental(old_snap, self._stats_snapshot(ia.annotations))
                 count += 1
         # Reload current image if it was in the batch
         if self._current_image_path and self._current_image_path in paths:
             self._on_image_selected(self._current_image_path)
-        self._update_project_stats()
         self.status_changed.emit(f"批量确认: {count} 张图片")
         logger.info("Batch confirmed %d images", count)
 
@@ -753,14 +769,15 @@ class LabelPanel(QWidget):
             label_path = self._project.label_path_for(img_path)
             ia = load_annotation(label_path)
             if ia and ia.annotations:
+                old_snap = self._stats_snapshot(ia.annotations)
                 ia.annotations.clear()
                 save_annotation(ia, label_path)
                 self._file_list.set_status(img_path, "unlabeled")
+                self._update_stats_incremental(old_snap, [])
                 count += 1
         # Reload current image if it was in the batch
         if self._current_image_path and self._current_image_path in paths:
             self._on_image_selected(self._current_image_path)
-        self._update_project_stats()
         self.status_changed.emit(f"批量删除标注: {count} 张图片")
         logger.info("Batch deleted annotations for %d images", count)
 
@@ -805,16 +822,17 @@ class LabelPanel(QWidget):
         self._save_current()
         count = 0
         for img_path, label_path, ia in affected:
+            old_snap = self._stats_snapshot(ia.annotations)
             for ann in ia.annotations:
                 if not ann.confirmed:
                     ann.confirmed = True
             save_annotation(ia, label_path)
             self._file_list.set_status(img_path, ia.status)
+            self._update_stats_incremental(old_snap, self._stats_snapshot(ia.annotations))
             count += 1
 
         if self._current_image_path and self._current_image_path in visible_paths:
             self._on_image_selected(self._current_image_path)
-        self._update_project_stats()
         self.status_changed.emit(f"已确认可见预标注: {count} 张图片")
         logger.info("Batch confirmed visible unconfirmed annotations for %d images", count)
 
@@ -842,13 +860,14 @@ class LabelPanel(QWidget):
         self._save_current()
         count = 0
         for img_path, label_path, ia in affected:
+            old_snap = self._stats_snapshot(ia.annotations)
             ia.annotations = [a for a in ia.annotations if a.confirmed]
             save_annotation(ia, label_path)
             self._file_list.set_status(img_path, ia.status)
+            self._update_stats_incremental(old_snap, self._stats_snapshot(ia.annotations))
             count += 1
 
         if self._current_image_path and self._current_image_path in visible_paths:
             self._on_image_selected(self._current_image_path)
-        self._update_project_stats()
         self.status_changed.emit(f"已撤销可见预标注: {count} 张图片")
         logger.info("Batch reverted visible unconfirmed annotations for %d images", count)

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from src.utils.colors import assign_color
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
 
 
 @dataclass

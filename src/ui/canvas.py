@@ -100,8 +100,6 @@ class AnnotationCanvas(QWidget):
         self._panning: bool = False
         self._pan_start: tuple[float, float] | None = None
 
-        # Lock state (when all annotations are confirmed)
-        self._locked: bool = False
 
     # ── Coordinate transforms ──────────────────────────────────
 
@@ -172,10 +170,46 @@ class AnnotationCanvas(QWidget):
             self.setCursor(Qt.CrossCursor)
 
     def set_locked(self, locked: bool) -> None:
-        """Set lock state. When locked, editing is blocked (view-only)."""
-        if self._locked != locked:
-            self._locked = locked
-            self.update()
+        """Set lock state (no-op, kept for API compatibility)."""
+        pass
+
+    @property
+    def annotations(self) -> list[Annotation]:
+        """Return the current annotations list (mutable reference)."""
+        return self._annotations
+
+    @annotations.setter
+    def annotations(self, value: list[Annotation]) -> None:
+        """Replace annotations list."""
+        self._annotations = value
+        self.update()
+
+    @property
+    def is_locked(self) -> bool:
+        """Return whether the canvas is in locked (view-only) mode."""
+        return False
+
+    def add_annotation(self, ann: Annotation) -> None:
+        """Append an annotation to the canvas and repaint."""
+        self._annotations.append(ann)
+        self.update()
+
+    def add_annotations(self, anns: list[Annotation]) -> None:
+        """Append multiple annotations and repaint once."""
+        self._annotations.extend(anns)
+        self.update()
+
+    def remove_annotation(self, ann_id: str) -> None:
+        """Remove annotation by ID and clear selection."""
+        self._annotations = [a for a in self._annotations if a.id != ann_id]
+        self._selected_id = None
+        self.update()
+
+    def clear_draw_state(self) -> None:
+        """Clear in-progress drawing state."""
+        self._draw_start = None
+        self._draw_current = None
+        self.update()
 
     def clear(self) -> None:
         """Clear image and annotations."""
@@ -187,7 +221,6 @@ class AnnotationCanvas(QWidget):
         self._drawing = False
         self._draw_start = None
         self._draw_current = None
-        self._locked = False
         self.update()
 
     def get_selected_annotation(self) -> Annotation | None:
@@ -289,8 +322,6 @@ class AnnotationCanvas(QWidget):
             painter.setPen(QColor("#6c7086"))
             zoom_pct = int(self._scale * 100)
             status_text = f"{zoom_pct}%"
-            if self._locked:
-                status_text += "  🔒"
             painter.drawText(8, self.height() - 8, status_text)
 
         painter.end()
@@ -433,10 +464,6 @@ class AnnotationCanvas(QWidget):
         if event.button() != Qt.LeftButton:
             return
 
-        # Block editing when locked (allow selection for viewing)
-        if self._locked and self.tool_mode != "select":
-            return
-
         if self.tool_mode == "draw_bbox":
             nx, ny = self._clamp_norm(*self.pixel_to_norm(px, py))
             self._drawing = True
@@ -452,7 +479,7 @@ class AnnotationCanvas(QWidget):
         elif self.tool_mode == "select":
             # Check if clicking a handle first (for selected bbox)
             handle = self._hit_test_handle(px, py)
-            if handle and not self._locked:
+            if handle:
                 self._dragging = True
                 self._drag_type = handle
                 self._drag_ann_id = self._selected_id
@@ -464,7 +491,7 @@ class AnnotationCanvas(QWidget):
 
             # Check if clicking a keypoint to drag
             kp_hit = self._hit_test_keypoint(px, py)
-            if kp_hit and not self._locked:
+            if kp_hit:
                 ann_id, kp_idx = kp_hit
                 self._dragging = True
                 self._drag_type = "move_kp"
@@ -477,14 +504,13 @@ class AnnotationCanvas(QWidget):
             hit_id = self.hit_test(px, py)
             if hit_id:
                 self.select_annotation(hit_id)
-                if not self._locked:
-                    self._dragging = True
-                    self._drag_type = "move"
-                    self._drag_ann_id = hit_id
-                    self._drag_start_norm = self.pixel_to_norm(px, py)
-                    ann = self.get_selected_annotation()
-                    if ann:
-                        self._drag_ann_snapshot = ann.to_dict()
+                self._dragging = True
+                self._drag_type = "move"
+                self._drag_ann_id = hit_id
+                self._drag_start_norm = self.pixel_to_norm(px, py)
+                ann = self.get_selected_annotation()
+                if ann:
+                    self._drag_ann_snapshot = ann.to_dict()
             else:
                 self.select_annotation(None)
 
@@ -570,46 +596,31 @@ class AnnotationCanvas(QWidget):
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.ControlModifier:
-            old_nx, old_ny = self.pixel_to_norm(event.x(), event.y())
-            if event.angleDelta().y() > 0:
-                self._scale = min(self._scale * ZOOM_FACTOR, MAX_SCALE)
-            else:
-                self._scale = max(self._scale / ZOOM_FACTOR, MIN_SCALE)
-            # Adjust offset so point under cursor stays fixed
-            new_px = old_nx * self._image_w * self._scale + self._offset_x
-            new_py = old_ny * self._image_h * self._scale + self._offset_y
-            self._offset_x += event.x() - new_px
-            self._offset_y += event.y() - new_py
-            self.zoom_changed.emit(self._scale)
-            self.update()
+            factor = ZOOM_FACTOR if event.angleDelta().y() > 0 else 1.0 / ZOOM_FACTOR
+            self._apply_zoom(event.x(), event.y(), factor)
+
+    def _apply_zoom(self, center_px: float, center_py: float, factor: float) -> None:
+        """Apply zoom by factor around a pixel center point."""
+        old_nx, old_ny = self.pixel_to_norm(center_px, center_py)
+        self._scale = max(MIN_SCALE, min(self._scale * factor, MAX_SCALE))
+        new_px = old_nx * self._image_w * self._scale + self._offset_x
+        new_py = old_ny * self._image_h * self._scale + self._offset_y
+        self._offset_x += center_px - new_px
+        self._offset_y += center_py - new_py
+        self.zoom_changed.emit(self._scale)
+        self.update()
 
     def zoom_in(self) -> None:
         """Zoom in by one step."""
         if self._image is None:
             return
-        cx, cy = self.width() / 2, self.height() / 2
-        old_nx, old_ny = self.pixel_to_norm(cx, cy)
-        self._scale = min(self._scale * ZOOM_FACTOR, MAX_SCALE)
-        new_px = old_nx * self._image_w * self._scale + self._offset_x
-        new_py = old_ny * self._image_h * self._scale + self._offset_y
-        self._offset_x += cx - new_px
-        self._offset_y += cy - new_py
-        self.zoom_changed.emit(self._scale)
-        self.update()
+        self._apply_zoom(self.width() / 2, self.height() / 2, ZOOM_FACTOR)
 
     def zoom_out(self) -> None:
         """Zoom out by one step."""
         if self._image is None:
             return
-        cx, cy = self.width() / 2, self.height() / 2
-        old_nx, old_ny = self.pixel_to_norm(cx, cy)
-        self._scale = max(self._scale / ZOOM_FACTOR, MIN_SCALE)
-        new_px = old_nx * self._image_w * self._scale + self._offset_x
-        new_py = old_ny * self._image_h * self._scale + self._offset_y
-        self._offset_x += cx - new_px
-        self._offset_y += cy - new_py
-        self.zoom_changed.emit(self._scale)
-        self.update()
+        self._apply_zoom(self.width() / 2, self.height() / 2, 1.0 / ZOOM_FACTOR)
 
     def zoom_fit(self) -> None:
         """Reset zoom to fit image in window."""
@@ -650,8 +661,6 @@ class AnnotationCanvas(QWidget):
         copy_ann.triggered.connect(lambda: self.annotation_copied.emit(ann.id))
 
         delete = menu.addAction("删除")
-        if self._locked:
-            delete.setEnabled(False)
         delete.triggered.connect(lambda: self.annotation_deleted.emit(ann.id))
 
         menu.exec_(event.globalPos())

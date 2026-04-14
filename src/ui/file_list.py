@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import QListWidget, QListWidgetItem, QMenu, QAction
 from PyQt5.QtCore import Qt, pyqtSignal, QUrl
 from PyQt5.QtGui import QColor, QDragEnterEvent, QDropEvent
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+from src.core.project import IMAGE_EXTENSIONS
 
 # Status colors (Catppuccin Mocha)
 STATUS_COLORS = {
