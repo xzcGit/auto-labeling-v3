@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt5.QtWidgets import QWidget, QMenu, QAction
+from PyQt5.QtWidgets import QWidget, QMenu, QAction, QInputDialog
 from PyQt5.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from PyQt5.QtGui import (
     QPainter,
@@ -56,6 +56,8 @@ class AnnotationCanvas(QWidget):
     class_requested = pyqtSignal(float, float)
     class_change_requested = pyqtSignal(str, float, float)  # ann_id, px, py
     annotations_changed = pyqtSignal()
+    keypoint_attach_requested = pyqtSignal(str, float, float)  # ann_id, px, py
+    keypoint_selected = pyqtSignal(str, int)  # ann_id, kp_index
 
     zoom_changed = pyqtSignal(float)  # current scale factor
 
@@ -81,6 +83,7 @@ class AnnotationCanvas(QWidget):
         # Annotations
         self._annotations: list[Annotation] = []
         self._selected_id: str | None = None
+        self._selected_kp_idx: int | None = None
         self._class_colors: dict[str, str] = {}
 
         # Drawing state
@@ -99,6 +102,9 @@ class AnnotationCanvas(QWidget):
         # Panning state
         self._panning: bool = False
         self._pan_start: tuple[float, float] | None = None
+
+        # Conflict pairs: {ann_id: paired_ann_id} (bidirectional)
+        self._conflict_pairs: dict[str, str] = {}
 
 
     # ── Coordinate transforms ──────────────────────────────────
@@ -155,6 +161,7 @@ class AnnotationCanvas(QWidget):
     def select_annotation(self, ann_id: str | None) -> None:
         """Select an annotation by ID, or deselect with None."""
         self._selected_id = ann_id
+        self._selected_kp_idx = None
         self.annotation_selected.emit(ann_id)
         self.update()
 
@@ -221,6 +228,37 @@ class AnnotationCanvas(QWidget):
         self._drawing = False
         self._draw_start = None
         self._draw_current = None
+        self._conflict_pairs.clear()
+        self.update()
+
+    # ── Conflict pair management ──────────────────────────────
+
+    def set_conflict_pairs(self, pairs: list[tuple[str, str]]) -> None:
+        """Set conflict pairs. Each pair is (existing_id, pred_id)."""
+        for eid, pid in pairs:
+            self._conflict_pairs[eid] = pid
+            self._conflict_pairs[pid] = eid
+        self.update()
+
+    def resolve_conflict(self, keep_id: str) -> None:
+        """Keep one annotation from a conflict pair and remove the other."""
+        remove_id = self._conflict_pairs.get(keep_id)
+        if not remove_id:
+            return
+        # Clean up mapping (both directions)
+        self._conflict_pairs.pop(keep_id, None)
+        self._conflict_pairs.pop(remove_id, None)
+        # Remove the losing annotation
+        self._annotations = [a for a in self._annotations if a.id != remove_id]
+        if self._selected_id == remove_id:
+            self._selected_id = None
+        self.annotation_deleted.emit(remove_id)
+        self.annotations_changed.emit()
+        self.update()
+
+    def clear_conflicts(self) -> None:
+        """Clear all conflict state."""
+        self._conflict_pairs.clear()
         self.update()
 
     def get_selected_annotation(self) -> Annotation | None:
@@ -345,16 +383,21 @@ class AnnotationCanvas(QWidget):
         draw_labels: bool = True,
     ) -> None:
         """Paint a single annotation (bbox + keypoints + label)."""
+        in_conflict = ann.id in self._conflict_pairs
         if ann.bbox:
             cx, cy, w, h = ann.bbox
             x1, y1 = self.norm_to_pixel(cx - w / 2, cy - h / 2)
             x2, y2 = self.norm_to_pixel(cx + w / 2, cy + h / 2)
 
-            pen = QPen(color, 2)
-            if not ann.confirmed:
-                pen.setStyle(Qt.DashLine)
+            if in_conflict and not ann.confirmed:
+                # Conflict prediction: teal dashed, thicker
+                pen = QPen(QColor("#89dceb"), 3, Qt.DashLine)
+            else:
+                pen = QPen(color, 2)
+                if not ann.confirmed:
+                    pen.setStyle(Qt.DashLine)
             if selected:
-                pen.setWidth(3)
+                pen.setWidth(pen.width() + 1)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(QRectF(x1, y1, x2 - x1, y2 - y1))
@@ -362,8 +405,10 @@ class AnnotationCanvas(QWidget):
             # Label background (skip at low zoom for performance)
             if draw_labels or selected:
                 label_text = ann.class_name
-                if not ann.confirmed:
-                    label_text += " ⚡"
+                if in_conflict:
+                    label_text += " \u21c4"
+                elif not ann.confirmed:
+                    label_text += " \u26a1"
                 font = QFont()
                 font.setPixelSize(LABEL_FONT_SIZE)
                 painter.setFont(font)
@@ -386,7 +431,8 @@ class AnnotationCanvas(QWidget):
         # Keypoints
         for i, kp in enumerate(ann.keypoints):
             px, py = self.norm_to_pixel(kp.x, kp.y)
-            r = KEYPOINT_RADIUS + (2 if selected else 0)
+            is_kp_selected = selected and self._selected_kp_idx == i
+            r = KEYPOINT_RADIUS + (3 if is_kp_selected else (2 if selected else 0))
 
             if kp.visible == 0:
                 painter.setPen(QPen(QColor("#6c7086"), 1))
@@ -398,15 +444,20 @@ class AnnotationCanvas(QWidget):
                 painter.setPen(QPen(color, 1))
                 painter.setBrush(QBrush(color))
 
+            if is_kp_selected:
+                painter.setPen(QPen(QColor("#f5e0dc"), 2))
+
             painter.drawEllipse(QPointF(px, py), r, r)
 
-            # Label for keypoint (skip at low zoom)
-            if selected and draw_labels:
+            # Label for keypoint (show when selected or when individual kp is selected)
+            if (selected and draw_labels) or is_kp_selected:
                 painter.setPen(QColor("#cdd6f4"))
                 font = QFont()
                 font.setPixelSize(10)
                 painter.setFont(font)
-                painter.drawText(int(px + r + 2), int(py - 2), kp.label)
+                vis_text = ["inv", "occ", "vis"][kp.visible]
+                label_text = f"{kp.label} ({vis_text})" if is_kp_selected else kp.label
+                painter.drawText(int(px + r + 2), int(py - 2), label_text)
 
     def _paint_handles(self, painter: QPainter, x1: float, y1: float, x2: float, y2: float) -> None:
         """Paint resize handles on selected bbox corners."""
@@ -581,8 +632,14 @@ class AnnotationCanvas(QWidget):
             return
 
         if self.tool_mode == "draw_keypoint" and self._draw_start:
-            # Emit class_requested on release (not press) so popup
-            # doesn't appear while mouse button is held
+            # Check if inside an existing bbox — attach to it
+            hit_id = self.hit_test(px, py)
+            if hit_id:
+                ann = next((a for a in self._annotations if a.id == hit_id), None)
+                if ann and ann.bbox:
+                    self.keypoint_attach_requested.emit(hit_id, px, py)
+                    return
+            # Outside any bbox — standalone keypoint (show class picker)
             self.class_requested.emit(px, py)
             return
 
@@ -633,6 +690,10 @@ class AnnotationCanvas(QWidget):
     def contextMenuEvent(self, event) -> None:
         """Show right-click context menu."""
         px, py = event.x(), event.y()
+
+        # Check if right-clicking a keypoint specifically
+        kp_hit = self._hit_test_keypoint(px, py)
+
         hit_id = self.hit_test(px, py)
         if not hit_id:
             return
@@ -643,6 +704,50 @@ class AnnotationCanvas(QWidget):
             return
 
         menu = QMenu(self)
+
+        # Keypoint-specific actions (when right-clicking directly on a keypoint)
+        if kp_hit and kp_hit[0] == hit_id:
+            kp_idx = kp_hit[1]
+            kp = ann.keypoints[kp_idx] if kp_idx < len(ann.keypoints) else None
+            if kp:
+                vis_names = ["不可见", "被遮挡", "可见"]
+                vis_label = vis_names[kp.visible] if kp.visible < 3 else "?"
+                kp_header = menu.addAction(f"关键点: {kp.label} ({vis_label})")
+                kp_header.setEnabled(False)
+
+                rename_kp = menu.addAction("重命名关键点")
+                rename_kp.triggered.connect(
+                    lambda _, aid=ann.id, ki=kp_idx: self._request_rename_keypoint(aid, ki))
+
+                cycle_vis = menu.addAction("切换可见性")
+                cycle_vis.triggered.connect(
+                    lambda _, aid=ann.id, ki=kp_idx: self.cycle_keypoint_visibility(aid, ki))
+
+                del_kp = menu.addAction("删除关键点")
+                del_kp.triggered.connect(
+                    lambda _, aid=ann.id, ki=kp_idx: self.remove_keypoint(aid, ki))
+
+                menu.addSeparator()
+
+        # Conflict resolution options
+        paired_id = self._conflict_pairs.get(ann.id)
+        if paired_id:
+            paired_ann = next((a for a in self._annotations if a.id == paired_id), None)
+            if paired_ann:
+                # Determine which is existing (confirmed) and which is prediction
+                if ann.confirmed:
+                    existing_ann, pred_ann = ann, paired_ann
+                else:
+                    existing_ann, pred_ann = paired_ann, ann
+                keep_existing = menu.addAction(
+                    f"保留确认框 (conf={existing_ann.confidence:.2f})")
+                keep_existing.triggered.connect(
+                    lambda: self.resolve_conflict(existing_ann.id))
+                keep_pred = menu.addAction(
+                    f"保留预测框 (conf={pred_ann.confidence:.2f})")
+                keep_pred.triggered.connect(
+                    lambda: self.resolve_conflict(pred_ann.id))
+                menu.addSeparator()
 
         # Modify class
         change_cls = menu.addAction("修改类别")
@@ -777,6 +882,17 @@ class AnnotationCanvas(QWidget):
         self.annotations_changed.emit()
         self.update()
 
+    def _request_rename_keypoint(self, ann_id: str, kp_idx: int) -> None:
+        """Show input dialog to rename a keypoint."""
+        ann = next((a for a in self._annotations if a.id == ann_id), None)
+        if not ann or kp_idx >= len(ann.keypoints):
+            return
+        old_label = ann.keypoints[kp_idx].label
+        new_label, ok = QInputDialog.getText(
+            self, "重命名关键点", "标签:", text=old_label)
+        if ok and new_label.strip():
+            self.rename_keypoint(ann_id, kp_idx, new_label.strip())
+
     # ── Public helpers for external bbox/kp creation ───────────
 
     def create_bbox_from_draw(self, class_name: str, class_id: int) -> Annotation | None:
@@ -829,3 +945,65 @@ class AnnotationCanvas(QWidget):
         self._draw_start = None
         self.update()
         return ann
+
+    def select_keypoint(self, ann_id: str, kp_idx: int) -> None:
+        """Select a specific keypoint within an annotation."""
+        self._selected_id = ann_id
+        self._selected_kp_idx = kp_idx
+        self.annotation_selected.emit(ann_id)
+        self.keypoint_selected.emit(ann_id, kp_idx)
+        self.update()
+
+    def add_keypoint_to_annotation(self, ann_id: str, kp: Keypoint) -> None:
+        """Append a keypoint to an existing annotation."""
+        for ann in self._annotations:
+            if ann.id == ann_id:
+                ann.keypoints.append(kp)
+                if not ann.confirmed:
+                    ann.confirmed = True
+                self.annotation_modified.emit(ann_id)
+                self.annotations_changed.emit()
+                self.update()
+                return
+
+    def remove_keypoint(self, ann_id: str, kp_idx: int) -> None:
+        """Remove a single keypoint from an annotation.
+
+        If the annotation has no bbox and this is the last keypoint, remove the annotation.
+        """
+        for ann in self._annotations:
+            if ann.id == ann_id:
+                if 0 <= kp_idx < len(ann.keypoints):
+                    ann.keypoints.pop(kp_idx)
+                    if not ann.bbox and not ann.keypoints:
+                        self._annotations = [a for a in self._annotations if a.id != ann_id]
+                        self.annotation_deleted.emit(ann_id)
+                    else:
+                        self.annotation_modified.emit(ann_id)
+                    if self._selected_kp_idx is not None and self._selected_kp_idx >= len(ann.keypoints):
+                        self._selected_kp_idx = None
+                    self.annotations_changed.emit()
+                    self.update()
+                return
+
+    def rename_keypoint(self, ann_id: str, kp_idx: int, new_label: str) -> None:
+        """Rename a keypoint's label."""
+        for ann in self._annotations:
+            if ann.id == ann_id:
+                if 0 <= kp_idx < len(ann.keypoints):
+                    ann.keypoints[kp_idx].label = new_label
+                    self.annotation_modified.emit(ann_id)
+                    self.annotations_changed.emit()
+                    self.update()
+                return
+
+    def cycle_keypoint_visibility(self, ann_id: str, kp_idx: int) -> None:
+        """Cycle keypoint visibility: 0 → 1 → 2 → 0."""
+        for ann in self._annotations:
+            if ann.id == ann_id:
+                if 0 <= kp_idx < len(ann.keypoints):
+                    ann.keypoints[kp_idx].visible = (ann.keypoints[kp_idx].visible + 1) % 3
+                    self.annotation_modified.emit(ann_id)
+                    self.annotations_changed.emit()
+                    self.update()
+                return

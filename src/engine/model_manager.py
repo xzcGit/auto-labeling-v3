@@ -103,6 +103,14 @@ class ModelRegistry:
                 return m
         return None
 
+    def rename(self, model_id: str, new_name: str) -> bool:
+        """Rename a model's display name. Returns True if found and renamed."""
+        model = self.get(model_id)
+        if model is None:
+            return False
+        model.name = new_name
+        return True
+
     def list_models(self, task: str | None = None) -> list[ModelInfo]:
         """List models, optionally filtered by task."""
         if task:

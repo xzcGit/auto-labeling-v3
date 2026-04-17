@@ -222,3 +222,205 @@ class TestCanvasViewportCulling:
         ])
         # No bbox, should always return True
         assert canvas._ann_in_viewport(kp_ann, 0, 0, 200, 200) is True
+
+
+class TestCanvasConflicts:
+    def test_set_conflict_pairs(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        a1 = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.2, 0.2), confirmed=True)
+        a2 = Annotation(class_name="person", class_id=0, bbox=(0.52, 0.52, 0.2, 0.2),
+                         confirmed=False, source="auto")
+        canvas.set_annotations([a1, a2])
+        canvas.set_conflict_pairs([(a1.id, a2.id)])
+
+        assert canvas._conflict_pairs[a1.id] == a2.id
+        assert canvas._conflict_pairs[a2.id] == a1.id
+
+    def test_resolve_conflict_keep_existing(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        a1 = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.2, 0.2), confirmed=True)
+        a2 = Annotation(class_name="person", class_id=0, bbox=(0.52, 0.52, 0.2, 0.2),
+                         confirmed=False, source="auto")
+        canvas.set_annotations([a1, a2])
+        canvas.set_conflict_pairs([(a1.id, a2.id)])
+
+        canvas.resolve_conflict(a1.id)  # keep existing
+
+        assert len(canvas.annotations) == 1
+        assert canvas.annotations[0].id == a1.id
+        assert a1.id not in canvas._conflict_pairs
+        assert a2.id not in canvas._conflict_pairs
+
+    def test_resolve_conflict_keep_prediction(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        a1 = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.2, 0.2), confirmed=True)
+        a2 = Annotation(class_name="person", class_id=0, bbox=(0.52, 0.52, 0.2, 0.2),
+                         confirmed=False, source="auto")
+        canvas.set_annotations([a1, a2])
+        canvas.set_conflict_pairs([(a1.id, a2.id)])
+
+        canvas.resolve_conflict(a2.id)  # keep prediction
+
+        assert len(canvas.annotations) == 1
+        assert canvas.annotations[0].id == a2.id
+        assert canvas.annotations[0].confirmed is False
+
+    def test_clear_conflicts(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        a1 = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.2, 0.2), confirmed=True)
+        a2 = Annotation(class_name="person", class_id=0, bbox=(0.52, 0.52, 0.2, 0.2),
+                         confirmed=False, source="auto")
+        canvas.set_annotations([a1, a2])
+        canvas.set_conflict_pairs([(a1.id, a2.id)])
+        canvas.clear_conflicts()
+
+        assert len(canvas._conflict_pairs) == 0
+        assert len(canvas.annotations) == 2  # both still there
+
+    def test_clear_also_clears_conflicts(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation
+
+        canvas = AnnotationCanvas()
+        a1 = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.2, 0.2), confirmed=True)
+        a2 = Annotation(class_name="person", class_id=0, bbox=(0.52, 0.52, 0.2, 0.2),
+                         confirmed=False, source="auto")
+        canvas.set_annotations([a1, a2])
+        canvas.set_conflict_pairs([(a1.id, a2.id)])
+        canvas.clear()
+
+        assert len(canvas._conflict_pairs) == 0
+        assert len(canvas.annotations) == 0
+
+
+class TestCanvasKeypointManagement:
+    def test_add_keypoint_to_annotation(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4))
+        canvas.set_annotations([ann])
+        assert len(ann.keypoints) == 0
+
+        kp = Keypoint(x=0.1, y=0.2, visible=2, label="nose")
+        canvas.add_keypoint_to_annotation(ann.id, kp)
+        assert len(canvas.annotations[0].keypoints) == 1
+        assert canvas.annotations[0].keypoints[0].label == "nose"
+
+    def test_add_keypoint_auto_confirms(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), confirmed=False)
+        canvas.set_annotations([ann])
+
+        kp = Keypoint(x=0.1, y=0.2, visible=2, label="nose")
+        canvas.add_keypoint_to_annotation(ann.id, kp)
+        assert canvas.annotations[0].confirmed is True
+
+    def test_remove_keypoint(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        kps = [Keypoint(x=0.1, y=0.2, visible=2, label="nose"),
+               Keypoint(x=0.3, y=0.4, visible=1, label="eye")]
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), keypoints=kps)
+        canvas.set_annotations([ann])
+
+        canvas.remove_keypoint(ann.id, 0)
+        assert len(canvas.annotations[0].keypoints) == 1
+        assert canvas.annotations[0].keypoints[0].label == "eye"
+
+    def test_remove_last_keypoint_on_bbox_ann_keeps_ann(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        kp = Keypoint(x=0.1, y=0.2, visible=2, label="nose")
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), keypoints=[kp])
+        canvas.set_annotations([ann])
+
+        canvas.remove_keypoint(ann.id, 0)
+        assert len(canvas.annotations) == 1  # bbox still there
+        assert len(canvas.annotations[0].keypoints) == 0
+
+    def test_remove_last_keypoint_on_kp_only_ann_deletes_ann(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        kp = Keypoint(x=0.1, y=0.2, visible=2, label="nose")
+        ann = Annotation(class_name="point", class_id=0, keypoints=[kp])
+        canvas.set_annotations([ann])
+
+        canvas.remove_keypoint(ann.id, 0)
+        assert len(canvas.annotations) == 0
+
+    def test_rename_keypoint(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        kp = Keypoint(x=0.1, y=0.2, visible=2, label="nose")
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), keypoints=[kp])
+        canvas.set_annotations([ann])
+
+        canvas.rename_keypoint(ann.id, 0, "left_eye")
+        assert canvas.annotations[0].keypoints[0].label == "left_eye"
+
+    def test_cycle_keypoint_visibility(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        kp = Keypoint(x=0.1, y=0.2, visible=0, label="nose")
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), keypoints=[kp])
+        canvas.set_annotations([ann])
+
+        canvas.cycle_keypoint_visibility(ann.id, 0)
+        assert canvas.annotations[0].keypoints[0].visible == 1
+        canvas.cycle_keypoint_visibility(ann.id, 0)
+        assert canvas.annotations[0].keypoints[0].visible == 2
+        canvas.cycle_keypoint_visibility(ann.id, 0)
+        assert canvas.annotations[0].keypoints[0].visible == 0
+
+    def test_select_keypoint(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        kp = Keypoint(x=0.1, y=0.2, visible=2, label="nose")
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), keypoints=[kp])
+        canvas.set_annotations([ann])
+
+        canvas.select_keypoint(ann.id, 0)
+        assert canvas._selected_id == ann.id
+        assert canvas._selected_kp_idx == 0
+
+    def test_select_annotation_clears_kp_selection(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+        from src.core.annotation import Annotation, Keypoint
+
+        canvas = AnnotationCanvas()
+        kp = Keypoint(x=0.1, y=0.2, visible=2, label="nose")
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), keypoints=[kp])
+        canvas.set_annotations([ann])
+
+        canvas.select_keypoint(ann.id, 0)
+        canvas.select_annotation(ann.id)
+        assert canvas._selected_kp_idx is None

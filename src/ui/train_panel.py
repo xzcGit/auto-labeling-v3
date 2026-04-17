@@ -27,6 +27,15 @@ from src.ui.icons import icon
 
 logger = logging.getLogger(__name__)
 
+# Default pretrained models per task
+_TASK_MODELS: dict[str, list[str]] = {
+    "detect": ["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "yolov8x.pt"],
+    "pose": ["yolov8n-pose.pt", "yolov8s-pose.pt", "yolov8m-pose.pt", "yolov8l-pose.pt", "yolov8x-pose.pt"],
+    "classify": ["yolov8n-cls.pt", "yolov8s-cls.pt", "yolov8m-cls.pt", "yolov8l-cls.pt", "yolov8x-cls.pt"],
+    "segment": ["yolov8n-seg.pt", "yolov8s-seg.pt", "yolov8m-seg.pt", "yolov8l-seg.pt", "yolov8x-seg.pt"],
+    "obb": ["yolov8n-obb.pt", "yolov8s-obb.pt", "yolov8m-obb.pt", "yolov8l-obb.pt", "yolov8x-obb.pt"],
+}
+
 
 def _collapsible_group(title: str, collapsed: bool = False) -> QGroupBox:
     """Create a checkable QGroupBox that acts as collapsible section."""
@@ -77,7 +86,7 @@ class TrainPanel(QWidget):
 
         self._model_combo = QComboBox()
         self._model_combo.setEditable(True)
-        self._model_combo.addItems(["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt", "yolov8x.pt"])
+        self._model_combo.addItems(_TASK_MODELS.get("detect", []))
         task_form.addRow("基础模型:", self._model_combo)
 
         self._device_combo = QComboBox()
@@ -392,6 +401,25 @@ class TrainPanel(QWidget):
         splitter.setSizes([380, 600])
         layout.addWidget(splitter)
 
+        # Disable scroll-wheel value changes on spinboxes and combos
+        # to prevent accidental edits while scrolling the parameter list
+        for w in self.findChildren(QSpinBox):
+            w.setFocusPolicy(Qt.StrongFocus)
+            w.installEventFilter(self)
+        for w in self.findChildren(QDoubleSpinBox):
+            w.setFocusPolicy(Qt.StrongFocus)
+            w.installEventFilter(self)
+        for w in self.findChildren(QComboBox):
+            w.setFocusPolicy(Qt.StrongFocus)
+            w.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        """Ignore wheel events on spinboxes/combos that don't have focus."""
+        if event.type() == event.Wheel and not obj.hasFocus():
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
+
     def _connect_signals(self) -> None:
         self._task_combo.currentTextChanged.connect(self._on_task_changed)
         self._preset_combo.currentTextChanged.connect(self._on_preset_changed)
@@ -401,6 +429,29 @@ class TrainPanel(QWidget):
 
     def _on_task_changed(self, task: str) -> None:
         self._pose_group.setVisible(task == "pose")
+        self._update_model_combo_for_task(task)
+
+    def _update_model_combo_for_task(self, task: str) -> None:
+        """Replace pretrained model entries to match the selected task."""
+        # Preserve registered models (after separator) and user edits
+        separator_idx = -1
+        registered_items: list[str] = []
+        for i in range(self._model_combo.count()):
+            text = self._model_combo.itemText(i)
+            if text == "──────────":
+                separator_idx = i
+            elif separator_idx >= 0:
+                registered_items.append(text)
+
+        self._model_combo.clear()
+        self._model_combo.addItems(_TASK_MODELS.get(task, _TASK_MODELS["detect"]))
+
+        if registered_items:
+            self._model_combo.addItem("──────────")
+            idx = self._model_combo.count() - 1
+            self._model_combo.model().item(idx).setEnabled(False)
+            for item in registered_items:
+                self._model_combo.addItem(item)
 
     def _on_preset_changed(self, preset_name: str) -> None:
         """Apply a training preset to all UI fields."""

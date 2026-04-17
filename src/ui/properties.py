@@ -8,9 +8,13 @@ from PyQt5.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QGroupBox,
     QComboBox,
     QPushButton,
+    QMenu,
+    QInputDialog,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
@@ -19,18 +23,27 @@ from src.core.annotation import Annotation
 
 
 class AnnotationPanel(QWidget):
-    """Right-side panel showing annotation list, properties, and image tags.
+    """Right-side panel showing annotation tree, properties, and image tags.
 
     Signals:
-        annotation_clicked(str): Annotation ID clicked in the list.
+        annotation_clicked(str): Annotation ID clicked in the tree.
+        keypoint_clicked(str, int): Keypoint clicked — (ann_id, kp_index).
+        keypoint_rename_requested(str, int, str): (ann_id, kp_idx, new_label).
+        keypoint_visibility_requested(str, int): (ann_id, kp_idx) — cycle visibility.
+        keypoint_delete_requested(str, int): (ann_id, kp_idx).
     """
 
     annotation_clicked = pyqtSignal(str)
+    keypoint_clicked = pyqtSignal(str, int)
+    keypoint_rename_requested = pyqtSignal(str, int, str)
+    keypoint_visibility_requested = pyqtSignal(str, int)
+    keypoint_delete_requested = pyqtSignal(str, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._annotations: list[Annotation] = []
         self._selected_id: str | None = None
+        self._selected_kp_idx: int | None = None
         self._classes: list[str] = []
         self._class_colors: dict[str, str] = {}
         self._init_ui()
@@ -66,12 +79,16 @@ class AnnotationPanel(QWidget):
 
         layout.addWidget(tags_group)
 
-        # Annotation list
+        # Annotation tree
         ann_group = QGroupBox("标注列表")
         ann_layout = QVBoxLayout(ann_group)
-        self._ann_list = QListWidget()
-        self._ann_list.currentRowChanged.connect(self._on_ann_clicked)
-        ann_layout.addWidget(self._ann_list)
+        self._ann_tree = QTreeWidget()
+        self._ann_tree.setHeaderHidden(True)
+        self._ann_tree.setIndentation(16)
+        self._ann_tree.currentItemChanged.connect(self._on_tree_item_changed)
+        self._ann_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._ann_tree.customContextMenuRequested.connect(self._on_tree_context_menu)
+        ann_layout.addWidget(self._ann_tree)
         layout.addWidget(ann_group)
 
         # Properties section
@@ -136,51 +153,83 @@ class AnnotationPanel(QWidget):
         self._class_colors = colors
 
     def set_annotations(self, annotations: list[Annotation]) -> None:
-        """Update the annotation list."""
+        """Update the annotation tree."""
         self._annotations = list(annotations)
-        self._ann_list.blockSignals(True)
-        self._ann_list.clear()
+        self._ann_tree.blockSignals(True)
+        self._ann_tree.clear()
 
         for ann in annotations:
-            color = self._class_colors.get(ann.class_name, "#89b4fa")
-            status_icon = "✓" if ann.confirmed else "⚡"
+            color = QColor(self._class_colors.get(ann.class_name, "#89b4fa"))
+            status_icon = "\u2713" if ann.confirmed else "\u26a1"
             type_hint = ""
             if ann.bbox and ann.keypoints:
-                type_hint = " [bbox+kp]"
+                type_hint = f" [bbox+kp\u00d7{len(ann.keypoints)}]"
             elif ann.bbox:
                 type_hint = " [bbox]"
             elif ann.keypoints:
-                type_hint = f" [kp×{len(ann.keypoints)}]"
+                type_hint = f" [kp\u00d7{len(ann.keypoints)}]"
 
-            item = QListWidgetItem(f"{status_icon} {ann.class_name}{type_hint}")
-            item.setData(Qt.UserRole, ann.id)
-            item.setForeground(QColor(color))
-            self._ann_list.addItem(item)
+            top_item = QTreeWidgetItem([f"{status_icon} {ann.class_name}{type_hint}"])
+            top_item.setData(0, Qt.UserRole, ann.id)
+            top_item.setData(0, Qt.UserRole + 1, -1)  # -1 = annotation level
+            top_item.setForeground(0, color)
+            self._ann_tree.addTopLevelItem(top_item)
 
-        self._ann_list.blockSignals(False)
+            # Add keypoint children
+            for i, kp in enumerate(ann.keypoints):
+                vis_names = ["\u25cb", "\u25d1", "\u25cf"]  # empty, half, full circle
+                vis_icon = vis_names[kp.visible] if kp.visible < 3 else "?"
+                child = QTreeWidgetItem([f"  {vis_icon} {kp.label}"])
+                child.setData(0, Qt.UserRole, ann.id)
+                child.setData(0, Qt.UserRole + 1, i)  # keypoint index
+                child.setForeground(0, color)
+                top_item.addChild(child)
+
+            if ann.keypoints:
+                top_item.setExpanded(True)
+
+        self._ann_tree.blockSignals(False)
         self._update_stats()
 
     def select_annotation(self, ann_id: str | None) -> None:
-        """Select an annotation in the list and show its properties."""
+        """Select an annotation in the tree and show its properties."""
         self._selected_id = ann_id
+        self._selected_kp_idx = None
         if ann_id is None:
-            self._ann_list.clearSelection()
+            self._ann_tree.clearSelection()
             self._clear_properties()
             return
 
-        # Find and select in list
-        for i in range(self._ann_list.count()):
-            item = self._ann_list.item(i)
-            if item.data(Qt.UserRole) == ann_id:
-                self._ann_list.blockSignals(True)
-                self._ann_list.setCurrentRow(i)
-                self._ann_list.blockSignals(False)
+        for i in range(self._ann_tree.topLevelItemCount()):
+            item = self._ann_tree.topLevelItem(i)
+            if item.data(0, Qt.UserRole) == ann_id:
+                self._ann_tree.blockSignals(True)
+                self._ann_tree.setCurrentItem(item)
+                self._ann_tree.blockSignals(False)
                 break
 
-        # Show properties
         ann = self._find_annotation(ann_id)
         if ann:
             self._show_properties(ann)
+
+    def select_keypoint(self, ann_id: str, kp_idx: int) -> None:
+        """Select a specific keypoint in the tree."""
+        self._selected_id = ann_id
+        self._selected_kp_idx = kp_idx
+
+        for i in range(self._ann_tree.topLevelItemCount()):
+            top = self._ann_tree.topLevelItem(i)
+            if top.data(0, Qt.UserRole) == ann_id:
+                top.setExpanded(True)
+                if 0 <= kp_idx < top.childCount():
+                    self._ann_tree.blockSignals(True)
+                    self._ann_tree.setCurrentItem(top.child(kp_idx))
+                    self._ann_tree.blockSignals(False)
+                break
+
+        ann = self._find_annotation(ann_id)
+        if ann and 0 <= kp_idx < len(ann.keypoints):
+            self._show_keypoint_properties(ann, kp_idx)
 
     def set_image_tags(self, tags: list[str]) -> None:
         """Set the current image's classification tags."""
@@ -193,15 +242,7 @@ class AnnotationPanel(QWidget):
         return [self._tags_list.item(i).text() for i in range(self._tags_list.count())]
 
     def set_project_stats(self, stats: dict) -> None:
-        """Update project-level statistics.
-
-        Expected stats dict keys:
-            total_images: int
-            labeled_images: int
-            confirmed_images: int
-            total_annotations: int
-            class_counts: dict[str, int]
-        """
+        """Update project-level statistics."""
         self._project_total_label.setText(f"总图片: {stats.get('total_images', 0)}")
         self._project_labeled_label.setText(f"已标注: {stats.get('labeled_images', 0)}")
         self._project_confirmed_label.setText(f"全确认: {stats.get('confirmed_images', 0)}")
@@ -219,7 +260,8 @@ class AnnotationPanel(QWidget):
         """Clear all state."""
         self._annotations = []
         self._selected_id = None
-        self._ann_list.clear()
+        self._selected_kp_idx = None
+        self._ann_tree.clear()
         self._tags_list.clear()
         self._clear_properties()
         self._stats_label.setText("")
@@ -237,6 +279,16 @@ class AnnotationPanel(QWidget):
             self._bbox_label.setText(f"关键点: {len(ann.keypoints)} 个")
         else:
             self._bbox_label.setText("")
+
+    def _show_keypoint_properties(self, ann: Annotation, kp_idx: int) -> None:
+        kp = ann.keypoints[kp_idx]
+        vis_names = ["不可见", "被遮挡", "可见"]
+        vis = vis_names[kp.visible] if kp.visible < 3 else "?"
+        self._class_label.setText(f"关键点: {kp.label}")
+        self._conf_label.setText(f"所属: {ann.class_name}")
+        self._status_label.setText(f"可见性: {vis}")
+        self._source_label.setText(f"坐标: ({kp.x:.4f}, {kp.y:.4f})")
+        self._bbox_label.setText(f"索引: {kp_idx}/{len(ann.keypoints)}")
 
     def _clear_properties(self) -> None:
         self._class_label.setText("")
@@ -257,19 +309,69 @@ class AnnotationPanel(QWidget):
                 return ann
         return None
 
-    def _on_ann_clicked(self, row: int) -> None:
-        if row >= 0:
-            item = self._ann_list.item(row)
-            if item:
-                ann_id = item.data(Qt.UserRole)
-                self.annotation_clicked.emit(ann_id)
+    def _on_tree_item_changed(self, current, previous) -> None:
+        if current is None:
+            return
+        ann_id = current.data(0, Qt.UserRole)
+        kp_idx = current.data(0, Qt.UserRole + 1)
+        if ann_id is None:
+            return
+        if kp_idx is not None and kp_idx >= 0:
+            self._selected_kp_idx = kp_idx
+            self.keypoint_clicked.emit(ann_id, kp_idx)
+            ann = self._find_annotation(ann_id)
+            if ann:
+                self._show_keypoint_properties(ann, kp_idx)
+        else:
+            self._selected_kp_idx = None
+            self.annotation_clicked.emit(ann_id)
+            ann = self._find_annotation(ann_id)
+            if ann:
+                self._show_properties(ann)
+
+    def _on_tree_context_menu(self, pos) -> None:
+        item = self._ann_tree.itemAt(pos)
+        if not item:
+            return
+        ann_id = item.data(0, Qt.UserRole)
+        kp_idx = item.data(0, Qt.UserRole + 1)
+        if ann_id is None:
+            return
+
+        ann = self._find_annotation(ann_id)
+        if not ann:
+            return
+
+        if kp_idx is not None and kp_idx >= 0 and kp_idx < len(ann.keypoints):
+            kp = ann.keypoints[kp_idx]
+            menu = QMenu(self)
+
+            rename = menu.addAction(f"重命名 ({kp.label})")
+            rename.triggered.connect(
+                lambda _, aid=ann_id, ki=kp_idx, old=kp.label: self._rename_keypoint(aid, ki, old))
+
+            vis_names = ["不可见", "被遮挡", "可见"]
+            vis = vis_names[kp.visible] if kp.visible < 3 else "?"
+            toggle_vis = menu.addAction(f"切换可见性 ({vis})")
+            toggle_vis.triggered.connect(
+                lambda _, aid=ann_id, ki=kp_idx: self.keypoint_visibility_requested.emit(aid, ki))
+
+            delete = menu.addAction("删除关键点")
+            delete.triggered.connect(
+                lambda _, aid=ann_id, ki=kp_idx: self.keypoint_delete_requested.emit(aid, ki))
+
+            menu.exec_(self._ann_tree.viewport().mapToGlobal(pos))
+
+    def _rename_keypoint(self, ann_id: str, kp_idx: int, old_label: str) -> None:
+        new_label, ok = QInputDialog.getText(self, "重命名关键点", "标签:", text=old_label)
+        if ok and new_label.strip():
+            self.keypoint_rename_requested.emit(ann_id, kp_idx, new_label.strip())
 
     def _on_add_tag(self) -> None:
         """Add selected class as image tag."""
         tag = self._tags_combo.currentText()
         if not tag:
             return
-        # Prevent duplicates
         for i in range(self._tags_list.count()):
             if self._tags_list.item(i).text() == tag:
                 return

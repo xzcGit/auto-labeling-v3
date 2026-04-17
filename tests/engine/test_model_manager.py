@@ -112,3 +112,19 @@ class TestModelRegistry:
         assert len(registry.list_models(task="detect")) == 1
         assert len(registry.list_models(task="pose")) == 1
         assert len(registry.list_models()) == 2
+
+    def test_rename(self, tmp_path):
+        registry = ModelRegistry(tmp_path / "models")
+        info = ModelInfo(name="old-name", path="a.pt", task="detect", base_model="yolov8n.pt", classes=["a"])
+        registry.register(info)
+        assert registry.rename(info.id, "new-name")
+        assert registry.get(info.id).name == "new-name"
+        # Persists after save/load
+        registry.save()
+        registry2 = ModelRegistry(tmp_path / "models")
+        registry2.load()
+        assert registry2.get(info.id).name == "new-name"
+
+    def test_rename_nonexistent(self, tmp_path):
+        registry = ModelRegistry(tmp_path / "models")
+        assert not registry.rename("no-such-id", "whatever")

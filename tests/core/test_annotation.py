@@ -1,7 +1,7 @@
 """Tests for annotation data models."""
 import uuid
 
-from src.core.annotation import Annotation, ImageAnnotation, Keypoint
+from src.core.annotation import Annotation, ImageAnnotation, Keypoint, compute_iou, find_conflicts
 
 
 class TestKeypoint:
@@ -153,3 +153,102 @@ class TestImageAnnotation:
             Annotation(class_name="b", class_id=1, bbox=(0.2, 0.2, 0.1, 0.1), confirmed=False, source="auto", confidence=0.8),
         )
         assert ia.status == "pending"
+
+
+class TestComputeIou:
+    def test_identical_boxes(self):
+        bbox = (0.5, 0.5, 0.2, 0.2)
+        assert abs(compute_iou(bbox, bbox) - 1.0) < 1e-9
+
+    def test_no_overlap(self):
+        a = (0.1, 0.1, 0.1, 0.1)  # [0.05, 0.05, 0.15, 0.15]
+        b = (0.9, 0.9, 0.1, 0.1)  # [0.85, 0.85, 0.95, 0.95]
+        assert compute_iou(a, b) == 0.0
+
+    def test_partial_overlap(self):
+        a = (0.5, 0.5, 0.4, 0.4)  # [0.3, 0.3, 0.7, 0.7]
+        b = (0.6, 0.6, 0.4, 0.4)  # [0.4, 0.4, 0.8, 0.8]
+        # Intersection: [0.4, 0.4, 0.7, 0.7] = 0.3 * 0.3 = 0.09
+        # Union: 0.16 + 0.16 - 0.09 = 0.23
+        iou = compute_iou(a, b)
+        assert abs(iou - 0.09 / 0.23) < 1e-6
+
+    def test_one_inside_other(self):
+        outer = (0.5, 0.5, 0.6, 0.6)
+        inner = (0.5, 0.5, 0.2, 0.2)
+        iou = compute_iou(outer, inner)
+        # Intersection = inner area = 0.04, union = 0.36
+        assert abs(iou - 0.04 / 0.36) < 1e-6
+
+
+class TestFindConflicts:
+    def _make_ann(self, cx, cy, w, h, cls="person", confirmed=True, source="manual"):
+        return Annotation(
+            class_name=cls, class_id=0, bbox=(cx, cy, w, h),
+            confirmed=confirmed, source=source,
+            confidence=0.9 if source == "auto" else 1.0,
+        )
+
+    def test_no_existing(self):
+        preds = [self._make_ann(0.5, 0.5, 0.2, 0.2, confirmed=False, source="auto")]
+        conflicts, clean = find_conflicts([], preds)
+        assert len(conflicts) == 0
+        assert len(clean) == 1
+
+    def test_no_overlap(self):
+        existing = [self._make_ann(0.1, 0.1, 0.1, 0.1)]
+        preds = [self._make_ann(0.9, 0.9, 0.1, 0.1, confirmed=False, source="auto")]
+        conflicts, clean = find_conflicts(existing, preds)
+        assert len(conflicts) == 0
+        assert len(clean) == 1
+
+    def test_overlap_same_class(self):
+        existing = [self._make_ann(0.5, 0.5, 0.3, 0.3)]
+        preds = [self._make_ann(0.52, 0.52, 0.3, 0.3, confirmed=False, source="auto")]
+        conflicts, clean = find_conflicts(existing, preds, iou_threshold=0.5)
+        assert len(conflicts) == 1
+        assert len(clean) == 0
+        assert conflicts[0][0] is existing[0]
+        assert conflicts[0][1] is preds[0]
+
+    def test_overlap_different_class_no_conflict(self):
+        existing = [self._make_ann(0.5, 0.5, 0.3, 0.3, cls="person")]
+        preds = [self._make_ann(0.52, 0.52, 0.3, 0.3, cls="car", confirmed=False, source="auto")]
+        conflicts, clean = find_conflicts(existing, preds, iou_threshold=0.5)
+        assert len(conflicts) == 0
+        assert len(clean) == 1
+
+    def test_only_confirmed_match(self):
+        # Unconfirmed existing should not trigger conflict
+        existing = [self._make_ann(0.5, 0.5, 0.3, 0.3, confirmed=False)]
+        preds = [self._make_ann(0.52, 0.52, 0.3, 0.3, confirmed=False, source="auto")]
+        conflicts, clean = find_conflicts(existing, preds, iou_threshold=0.5)
+        assert len(conflicts) == 0
+        assert len(clean) == 1
+
+    def test_below_threshold(self):
+        existing = [self._make_ann(0.3, 0.3, 0.2, 0.2)]
+        preds = [self._make_ann(0.5, 0.5, 0.2, 0.2, confirmed=False, source="auto")]
+        conflicts, clean = find_conflicts(existing, preds, iou_threshold=0.5)
+        assert len(conflicts) == 0
+        assert len(clean) == 1
+
+    def test_pred_without_bbox(self):
+        existing = [self._make_ann(0.5, 0.5, 0.3, 0.3)]
+        pred = Annotation(class_name="person", class_id=0, bbox=None,
+                          keypoints=[Keypoint(0.5, 0.5, 2, "pt")],
+                          confirmed=False, source="auto")
+        conflicts, clean = find_conflicts(existing, [pred])
+        assert len(conflicts) == 0
+        assert len(clean) == 1
+
+    def test_greedy_one_existing_one_pred(self):
+        # Two predictions overlap the same existing — only the best match wins
+        existing = [self._make_ann(0.5, 0.5, 0.3, 0.3)]
+        pred1 = self._make_ann(0.51, 0.51, 0.3, 0.3, confirmed=False, source="auto")
+        pred2 = self._make_ann(0.55, 0.55, 0.3, 0.3, confirmed=False, source="auto")
+        conflicts, clean = find_conflicts(existing, [pred1, pred2], iou_threshold=0.3)
+        assert len(conflicts) == 1
+        # pred1 has higher IoU with existing, so it should be the conflict
+        assert conflicts[0][1] is pred1
+        assert len(clean) == 1

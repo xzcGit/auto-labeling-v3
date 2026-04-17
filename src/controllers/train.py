@@ -36,6 +36,7 @@ class TrainController:
 
     def validate_and_prepare(
         self, project: ProjectManager, task: str, val_ratio: float,
+        kpt_shape: list[int] | None = None,
     ) -> str | None:
         """Validate dataset and prepare for training. Returns data_yaml path or None."""
         confirmed_count = 0
@@ -76,7 +77,7 @@ class TrainController:
 
         preparer = DatasetPreparer(project)
         output_dir = project.project_dir / "datasets" / "current"
-        data_yaml = preparer.prepare(output_dir, task=task, val_ratio=val_ratio)
+        data_yaml = preparer.prepare(output_dir, task=task, val_ratio=val_ratio, kpt_shape=kpt_shape)
         return str(data_yaml)
 
     def start(self, config: TrainConfig, project: ProjectManager, task: str) -> TrainWorker:

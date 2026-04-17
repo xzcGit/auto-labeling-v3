@@ -39,6 +39,7 @@ class ModelPanel(QWidget):
 
     model_load_requested = pyqtSignal(str)
     model_delete_requested = pyqtSignal(str)
+    model_rename_requested = pyqtSignal(str)
     model_import_requested = pyqtSignal()  # Request to import external .pt file
 
     def __init__(self, parent=None):
@@ -66,12 +67,15 @@ class ModelPanel(QWidget):
         self._btn_delete = QPushButton(icon("delete"), "删除模型")
         self._btn_delete.setStyleSheet("background-color: #f38ba8; color: #1e1e2e;")
         self._btn_delete.setToolTip("从注册表中删除选中模型")
+        self._btn_rename = QPushButton("重命名")
+        self._btn_rename.setToolTip("修改选中模型的显示名称")
         self._btn_import = QPushButton(icon("import"), "导入模型")
         self._btn_import.setToolTip("从文件导入外部 .pt 模型")
         self._btn_compare = QPushButton("对比模型")
         self._btn_compare.setToolTip("对比选中模型的指标")
         btn_layout.addWidget(self._btn_load)
         btn_layout.addWidget(self._btn_delete)
+        btn_layout.addWidget(self._btn_rename)
         btn_layout.addWidget(self._btn_import)
         btn_layout.addWidget(self._btn_compare)
         list_layout.addLayout(btn_layout)
@@ -124,6 +128,14 @@ class ModelPanel(QWidget):
         self._iou_spin.setValue(0.45)
         auto_form.addRow("IoU 阈值:", self._iou_spin)
 
+        self._overlap_iou_spin = QDoubleSpinBox()
+        self._overlap_iou_spin.setRange(0.01, 1.0)
+        self._overlap_iou_spin.setDecimals(2)
+        self._overlap_iou_spin.setSingleStep(0.05)
+        self._overlap_iou_spin.setValue(0.5)
+        self._overlap_iou_spin.setToolTip("预测框与已确认框重叠超过此阈值时触发冲突二选一")
+        auto_form.addRow("重叠 IoU 阈值:", self._overlap_iou_spin)
+
         layout.addWidget(auto_group)
 
         # Current model indicator
@@ -137,6 +149,7 @@ class ModelPanel(QWidget):
         self._model_list.currentRowChanged.connect(self._on_model_selected)
         self._btn_load.clicked.connect(self._on_load)
         self._btn_delete.clicked.connect(self._on_delete)
+        self._btn_rename.clicked.connect(self._on_rename)
         self._btn_import.clicked.connect(lambda: self.model_import_requested.emit())
         self._btn_compare.clicked.connect(self._on_compare)
 
@@ -167,6 +180,9 @@ class ModelPanel(QWidget):
     def get_iou_threshold(self) -> float:
         return self._iou_spin.value()
 
+    def get_overlap_iou_threshold(self) -> float:
+        return self._overlap_iou_spin.value()
+
     def _on_model_selected(self, row: int) -> None:
         if 0 <= row < len(self._models):
             model = self._models[row]
@@ -193,6 +209,11 @@ class ModelPanel(QWidget):
         model_id = self._get_selected_id()
         if model_id:
             self.model_delete_requested.emit(model_id)
+
+    def _on_rename(self) -> None:
+        model_id = self._get_selected_id()
+        if model_id:
+            self.model_rename_requested.emit(model_id)
 
     def _on_compare(self) -> None:
         """Show comparison dialog for selected models."""

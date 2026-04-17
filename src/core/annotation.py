@@ -108,6 +108,7 @@ class ImageAnnotation:
 
     @property
     def confirmed_count(self) -> int:
+
         return sum(1 for a in self.annotations if a.confirmed)
 
     @property
@@ -122,3 +123,66 @@ class ImageAnnotation:
         if all(a.confirmed for a in self.annotations):
             return "confirmed"
         return "pending"
+
+
+def compute_iou(bbox1: tuple[float, float, float, float],
+                bbox2: tuple[float, float, float, float]) -> float:
+    """Compute IoU between two (cx, cy, w, h) normalized bboxes."""
+    cx1, cy1, w1, h1 = bbox1
+    cx2, cy2, w2, h2 = bbox2
+    # Convert to x1, y1, x2, y2
+    ax1, ay1, ax2, ay2 = cx1 - w1 / 2, cy1 - h1 / 2, cx1 + w1 / 2, cy1 + h1 / 2
+    bx1, by1, bx2, by2 = cx2 - w2 / 2, cy2 - h2 / 2, cx2 + w2 / 2, cy2 + h2 / 2
+    # Intersection
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter == 0.0:
+        return 0.0
+    area1 = w1 * h1
+    area2 = w2 * h2
+    union = area1 + area2 - inter
+    if union <= 0.0:
+        return 0.0
+    return inter / union
+
+
+def find_conflicts(
+    existing: list[Annotation],
+    predictions: list[Annotation],
+    iou_threshold: float = 0.5,
+) -> tuple[list[tuple[Annotation, Annotation]], list[Annotation]]:
+    """Match predictions against confirmed same-class existing annotations by IoU.
+
+    Returns (conflict_pairs, non_conflict_predictions).
+    Each existing annotation is matched to at most one prediction (greedy, highest IoU first).
+    """
+    confirmed = [a for a in existing if a.confirmed and a.bbox]
+    matched_existing: set[str] = set()
+    conflicts: list[tuple[Annotation, Annotation]] = []
+    non_conflicts: list[Annotation] = []
+
+    for pred in predictions:
+        if not pred.bbox:
+            non_conflicts.append(pred)
+            continue
+        best_iou = 0.0
+        best_match: Annotation | None = None
+        for ex in confirmed:
+            if ex.id in matched_existing:
+                continue
+            if ex.class_name != pred.class_name:
+                continue
+            iou = compute_iou(ex.bbox, pred.bbox)
+            if iou > best_iou:
+                best_iou = iou
+                best_match = ex
+        if best_match is not None and best_iou >= iou_threshold:
+            matched_existing.add(best_match.id)
+            conflicts.append((best_match, pred))
+        else:
+            non_conflicts.append(pred)
+
+    return conflicts, non_conflicts

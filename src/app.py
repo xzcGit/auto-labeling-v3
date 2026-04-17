@@ -161,6 +161,11 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self._on_export)
         file_menu.addAction(export_action)
 
+        import_action = QAction(icon("import"), "导入标注...", self)
+        import_action.setShortcut("Ctrl+I")
+        import_action.triggered.connect(self._on_import)
+        file_menu.addAction(import_action)
+
         file_menu.addSeparator()
 
         exit_action = QAction(icon("exit"), "退出", self)
@@ -204,6 +209,7 @@ class MainWindow(QMainWindow):
             self._model_panel = ModelPanel()
             self._model_panel.model_load_requested.connect(self._on_model_load)
             self._model_panel.model_delete_requested.connect(self._on_model_delete)
+            self._model_panel.model_rename_requested.connect(self._on_model_rename)
             self._model_panel.model_import_requested.connect(self._on_model_import)
             self.tab_widget.addTab(self._model_panel, icon("model_tab"), "模型")
         self._model_panel.set_models(self._model_registry.list_models())
@@ -246,6 +252,20 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError, KeyError):
             pass  # Error already shown by controller
 
+    def _on_import(self) -> None:
+        if not self._project:
+            return
+        if self._label_panel:
+            self._label_panel.save_and_cleanup()
+        count = self._project_ctrl.import_annotations(self._project)
+        if count is not None and count > 0:
+            # Refresh label panel to show imported annotations
+            if self._label_panel:
+                self._label_panel.set_project(self._project)
+            self._status_label.setText(f"导入完成: {count} 个图片")
+        elif count == 0:
+            self._status_label.setText("导入完成: 无匹配图片")
+
     def _on_class_manager(self) -> None:
         if not self._project:
             return
@@ -264,6 +284,10 @@ class MainWindow(QMainWindow):
 
     def _on_model_delete(self, model_id: str) -> None:
         if self._model_ctrl.delete_model(model_id):
+            self._refresh_model_lists()
+
+    def _on_model_rename(self, model_id: str) -> None:
+        if self._model_ctrl.rename_model(model_id):
             self._refresh_model_lists()
 
     def _on_model_import(self) -> None:
@@ -290,11 +314,12 @@ class MainWindow(QMainWindow):
             return
         conf = self._model_panel.get_conf_threshold() if self._model_panel else 0.5
         iou = self._model_panel.get_iou_threshold() if self._model_panel else 0.45
+        overlap_iou = self._model_panel.get_overlap_iou_threshold() if self._model_panel else 0.5
         annotations = self._model_ctrl.predict_single(
             img_path, self._project.config.classes, conf=conf, iou=iou,
         )
         if annotations:
-            self._label_panel.add_auto_annotations(annotations)
+            self._label_panel.add_auto_annotations(annotations, overlap_iou=overlap_iou)
             self._status_label.setText(f"自动标注: 检测到 {len(annotations)} 个目标")
         else:
             self._status_label.setText("自动标注: 未检测到目标")
@@ -358,7 +383,11 @@ class MainWindow(QMainWindow):
         ia = load_annotation(label_path)
         if ia is None:
             ia = ImageAnnotation(image_path=img_path.name, image_size=img_size)
-        for ann in annotations:
+        # Filter out predictions that overlap with existing confirmed annotations
+        from src.core.annotation import find_conflicts
+        overlap_iou = self._model_panel.get_overlap_iou_threshold() if self._model_panel else 0.5
+        _, clean_preds = find_conflicts(ia.annotations, annotations, overlap_iou)
+        for ann in clean_preds:
             ia.annotations.append(ann)
         from src.core.label_io import save_annotation
         save_annotation(ia, label_path)
@@ -407,7 +436,10 @@ class MainWindow(QMainWindow):
 
             task = self._train_panel._task_combo.currentText()
             val_ratio = self._train_panel.get_val_ratio()
-            data_yaml = self._train_ctrl.validate_and_prepare(self._project, task, val_ratio)
+            kpt_shape = None
+            if task == "pose":
+                kpt_shape = [self._train_panel._kpt_num_spin.value(), self._train_panel._kpt_dim_spin.value()]
+            data_yaml = self._train_ctrl.validate_and_prepare(self._project, task, val_ratio, kpt_shape=kpt_shape)
             if data_yaml is None:
                 self._train_panel._btn_start.setEnabled(True)
                 self._train_panel._btn_stop.setEnabled(False)

@@ -15,6 +15,7 @@ class AppConfig:
     auto_save: bool = True
     default_conf_threshold: float = 0.5
     default_iou_threshold: float = 0.45
+    overlap_iou_threshold: float = 0.5
     window_geometry: dict[str, int] = field(
         default_factory=lambda: {"x": 100, "y": 100, "width": 1400, "height": 900}
     )
@@ -26,6 +27,7 @@ class AppConfig:
             "auto_save": self.auto_save,
             "default_conf_threshold": self.default_conf_threshold,
             "default_iou_threshold": self.default_iou_threshold,
+            "overlap_iou_threshold": self.overlap_iou_threshold,
             "window_geometry": self.window_geometry,
         }
 
@@ -37,6 +39,7 @@ class AppConfig:
             auto_save=d.get("auto_save", True),
             default_conf_threshold=d.get("default_conf_threshold", 0.5),
             default_iou_threshold=d.get("default_iou_threshold", 0.45),
+            overlap_iou_threshold=d.get("overlap_iou_threshold", 0.5),
             window_geometry=d.get("window_geometry", {"x": 100, "y": 100, "width": 1400, "height": 900}),
         )
 

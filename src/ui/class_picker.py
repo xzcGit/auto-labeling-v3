@@ -162,3 +162,95 @@ class ClassPickerPopup(QDialog):
     def is_new_class(self) -> bool:
         """Return True if the user typed a new class name."""
         return self._new_class is not None
+
+
+class KeypointLabelPicker(QDialog):
+    """Popup dialog for selecting a keypoint label.
+
+    Shows existing keypoint labels from current annotations and allows free-text.
+    """
+
+    def __init__(
+        self,
+        existing_labels: list[str],
+        default_label: str = "point",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("关键点标签")
+        self.setWindowFlags(
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
+        self.setMinimumWidth(160)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+        self._labels = list(existing_labels)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("输入标签或搜索...")
+        self._input.setText(default_label)
+        self._input.selectAll()
+        self._input.textChanged.connect(self._on_input_changed)
+        self._input.returnPressed.connect(self._on_confirm)
+        layout.addWidget(self._input)
+
+        self._list = QListWidget()
+        self._list.setMaximumHeight(180)
+        for label in existing_labels:
+            self._list.addItem(QListWidgetItem(label))
+        self._list.itemClicked.connect(self._on_item_clicked)
+        layout.addWidget(self._list)
+
+        hint = QLabel("单击选择 / 输入后回车")
+        hint.setStyleSheet("color: #6c7086; font-size: 10px;")
+        hint.setAlignment(Qt.AlignCenter)
+        layout.addWidget(hint)
+
+        self._input.setFocus()
+
+    def _on_input_changed(self, text: str) -> None:
+        text_lower = text.strip().lower()
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            item.setHidden(text_lower != "" and text_lower not in item.text().lower())
+        for i in range(self._list.count()):
+            if not self._list.item(i).isHidden():
+                self._list.setCurrentRow(i)
+                break
+
+    def _on_confirm(self) -> None:
+        text = self._input.text().strip()
+        if text:
+            self.accept()
+        elif self._list.currentItem() and not self._list.currentItem().isHidden():
+            self.accept()
+
+    def _on_item_clicked(self, item: QListWidgetItem) -> None:
+        self._input.setText(item.text())
+        self.accept()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_Escape:
+            self.reject()
+        elif event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self._on_confirm()
+        else:
+            super().keyPressEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(100, self._check_focus)
+
+    def _check_focus(self) -> None:
+        if not self.isActiveWindow():
+            self.reject()
+
+    def get_label(self) -> str | None:
+        """Return the selected/typed label, or None if cancelled."""
+        text = self._input.text().strip()
+        return text if text else None

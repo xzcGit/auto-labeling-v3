@@ -80,6 +80,24 @@ class ModelController:
             return True
         return False
 
+    def rename_model(self, model_id: str) -> bool:
+        """Rename a model's display name via dialog. Returns True if renamed."""
+        if not self._registry:
+            return False
+        model_info = self._registry.get(model_id)
+        if not model_info:
+            return False
+        new_name, ok = QInputDialog.getText(
+            self._parent, "重命名模型", "请输入新的模型名称:",
+            text=model_info.name,
+        )
+        if not ok or not new_name.strip() or new_name.strip() == model_info.name:
+            return False
+        self._registry.rename(model_id, new_name.strip())
+        self._registry.save()
+        logger.info("Renamed model %s -> %s", model_id, new_name.strip())
+        return True
+
     def import_model(self) -> ModelInfo | None:
         """Import an external .pt model. Returns ModelInfo or None."""
         if not self._registry or not self._project:

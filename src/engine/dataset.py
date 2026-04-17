@@ -1,7 +1,9 @@
 """Dataset preparation for YOLO training (train/val split, symlinks, data.yaml)."""
 from __future__ import annotations
 
+import logging
 import random
+import shutil
 from collections import defaultdict
 from pathlib import Path
 
@@ -10,6 +12,8 @@ import yaml
 from src.core.annotation import ImageAnnotation
 from src.core.label_io import load_annotation
 from src.core.project import ProjectManager
+
+logger = logging.getLogger(__name__)
 
 
 class DatasetPreparer:
@@ -28,6 +32,11 @@ class DatasetPreparer:
     ) -> Path:
         """Prepare dataset and return path to data.yaml."""
         output_dir = Path(output_dir)
+
+        # Clean previous dataset to avoid stale symlinks / ultralytics .cache files
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+
         classes = self.pm.config.classes
 
         # Collect labeled images with confirmed annotations
@@ -43,8 +52,19 @@ class DatasetPreparer:
             ia.annotations = confirmed
             labeled.append((img_path, ia))
 
+        if not labeled:
+            raise ValueError("没有找到已确认标注的图片，无法准备数据集")
+
         # Stratified split by primary class
         train_set, val_set = self._stratified_split(labeled, val_ratio, seed)
+
+        if not train_set:
+            raise ValueError("训练集为空，请减小验证集比例或增加标注数据")
+
+        logger.info(
+            "Dataset prepared: %d train, %d val (task=%s)",
+            len(train_set), len(val_set), task,
+        )
 
         if task == "classify":
             self._export_classify(output_dir, train_set, val_set)
@@ -53,7 +73,7 @@ class DatasetPreparer:
 
         # Generate data.yaml
         data_yaml_path = output_dir / "data.yaml"
-        data = self._build_data_yaml(output_dir, classes, task, kpt_shape)
+        data = self._build_data_yaml(output_dir, classes, task, kpt_shape, has_val=bool(val_set))
         data_yaml_path.write_text(yaml.dump(data, default_flow_style=False), encoding="utf-8")
         return data_yaml_path
 
@@ -150,15 +170,25 @@ class DatasetPreparer:
         classes: list[str],
         task: str,
         kpt_shape: list[int] | None,
+        has_val: bool = True,
     ) -> dict:
         """Build data.yaml content dict."""
+        if task == "classify":
+            data = {
+                "path": str(output_dir.resolve()),
+                "train": "train",
+            }
+            if has_val:
+                data["val"] = "val"
+            return data
         data = {
             "path": str(output_dir.resolve()),
             "train": "train/images",
-            "val": "val/images",
             "nc": len(classes),
             "names": classes,
         }
+        if has_val:
+            data["val"] = "val/images"
         if task == "pose" and kpt_shape:
             data["kpt_shape"] = kpt_shape
         return data

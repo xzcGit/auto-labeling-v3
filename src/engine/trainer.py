@@ -58,6 +58,7 @@ class TrainConfig:
     def to_train_args(self) -> dict:
         """Convert to kwargs dict for YOLO.train()."""
         args = {
+            "task": self.task,
             "data": self.data_yaml,
             "epochs": self.epochs,
             "batch": self.batch,
@@ -95,8 +96,6 @@ class TrainConfig:
         if self.task == "pose":
             args["pose"] = self.pose
             args["kobj"] = self.kobj
-            if self.kpt_shape:
-                args["kpt_shape"] = self.kpt_shape
         return args
 
 
@@ -166,8 +165,8 @@ class Trainer:
         on_epoch_end: Callable[[dict], None] | None = None,
     ) -> None:
         """Start training."""
-        logger.info("Starting training: model=%s, epochs=%d", config.model, config.epochs)
-        self._model = self._yolo_cls(config.model)
+        logger.info("Starting training: model=%s, task=%s, epochs=%d", config.model, config.task, config.epochs)
+        self._model = self._yolo_cls(config.model, task=config.task)
 
         def _epoch_callback(trainer_obj):
             if self._cancel_requested:

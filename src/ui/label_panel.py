@@ -26,7 +26,7 @@ from src.core.project import ProjectManager
 from src.ui.canvas import AnnotationCanvas
 from src.ui.file_list import FileListWidget
 from src.ui.properties import AnnotationPanel
-from src.ui.class_picker import ClassPickerPopup
+from src.ui.class_picker import ClassPickerPopup, KeypointLabelPicker
 from src.utils.image import get_image_size, ImageCache
 from src.utils.undo import UndoStack
 from src.ui.icons import icon
@@ -185,9 +185,15 @@ class LabelPanel(QWidget):
         self._canvas.class_change_requested.connect(self._on_class_change_requested)
         self._canvas.annotations_changed.connect(self._on_annotations_changed)
         self._canvas.annotation_copied.connect(self._on_annotation_copied)
+        self._canvas.keypoint_attach_requested.connect(self._on_keypoint_attach_requested)
+        self._canvas.keypoint_selected.connect(self._ann_panel.select_keypoint)
 
         # Properties panel
         self._ann_panel.annotation_clicked.connect(self._canvas.select_annotation)
+        self._ann_panel.keypoint_clicked.connect(self._on_panel_keypoint_clicked)
+        self._ann_panel.keypoint_rename_requested.connect(self._on_keypoint_rename)
+        self._ann_panel.keypoint_visibility_requested.connect(self._on_keypoint_visibility)
+        self._ann_panel.keypoint_delete_requested.connect(self._on_keypoint_delete)
 
         # Confirm all
         self._btn_confirm_all.clicked.connect(self._confirm_all)
@@ -438,6 +444,72 @@ class LabelPanel(QWidget):
         ann.class_id = self._project.config.get_class_id(cls_name)
         self._push_undo()
         self._canvas.update()
+        self._sync_annotations_to_panel()
+
+    def _on_keypoint_attach_requested(self, ann_id: str, px: float, py: float) -> None:
+        """Show keypoint label picker and attach keypoint to existing annotation."""
+        from src.core.annotation import Keypoint
+
+        ann = next((a for a in self._canvas.annotations if a.id == ann_id), None)
+        if ann is None or not self._canvas._draw_start:
+            self._clear_draw_state()
+            return
+
+        # Collect existing keypoint labels from current image
+        existing_labels: list[str] = []
+        seen: set[str] = set()
+        for a in self._canvas.annotations:
+            for kp in a.keypoints:
+                if kp.label not in seen:
+                    existing_labels.append(kp.label)
+                    seen.add(kp.label)
+
+        default_label = f"kp_{len(ann.keypoints)}"
+
+        picker = KeypointLabelPicker(
+            existing_labels=existing_labels,
+            default_label=default_label,
+            parent=self,
+        )
+        global_pos = self._canvas.mapToGlobal(QPoint(int(px), int(py)))
+        picker.move(global_pos)
+
+        if not picker.exec_():
+            self._clear_draw_state()
+            return
+
+        label = picker.get_label()
+        if not label:
+            self._clear_draw_state()
+            return
+
+        nx, ny = self._canvas._draw_start
+        kp = Keypoint(x=nx, y=ny, visible=2, label=label)
+        self._canvas.add_keypoint_to_annotation(ann_id, kp)
+        self._canvas._draw_start = None
+        self._push_undo()
+        self._sync_annotations_to_panel()
+
+    def _on_panel_keypoint_clicked(self, ann_id: str, kp_idx: int) -> None:
+        """Handle keypoint selection from the panel tree."""
+        self._canvas.select_keypoint(ann_id, kp_idx)
+
+    def _on_keypoint_rename(self, ann_id: str, kp_idx: int, new_label: str) -> None:
+        """Handle keypoint rename from panel context menu."""
+        self._canvas.rename_keypoint(ann_id, kp_idx, new_label)
+        self._push_undo()
+        self._sync_annotations_to_panel()
+
+    def _on_keypoint_visibility(self, ann_id: str, kp_idx: int) -> None:
+        """Handle keypoint visibility toggle from panel."""
+        self._canvas.cycle_keypoint_visibility(ann_id, kp_idx)
+        self._push_undo()
+        self._sync_annotations_to_panel()
+
+    def _on_keypoint_delete(self, ann_id: str, kp_idx: int) -> None:
+        """Handle keypoint deletion from panel."""
+        self._canvas.remove_keypoint(ann_id, kp_idx)
+        self._push_undo()
         self._sync_annotations_to_panel()
 
     def _sync_annotations_to_panel(self) -> None:
@@ -716,9 +788,23 @@ class LabelPanel(QWidget):
         """Return the currently displayed image path."""
         return self._current_image_path
 
-    def add_auto_annotations(self, annotations: list) -> None:
-        """Add auto-label predictions to current image (unconfirmed)."""
-        self._canvas.add_annotations(annotations)
+    def add_auto_annotations(self, annotations: list, overlap_iou: float = 0.5) -> None:
+        """Add auto-label predictions to current image with conflict detection."""
+        from src.core.annotation import find_conflicts
+
+        existing = self._canvas.annotations
+        conflicts, clean_preds = find_conflicts(existing, annotations, overlap_iou)
+
+        # Add non-conflicting predictions directly
+        self._canvas.add_annotations(clean_preds)
+
+        # Add conflicting predictions and mark them as conflict pairs
+        if conflicts:
+            conflict_anns = [pred for _, pred in conflicts]
+            self._canvas.add_annotations(conflict_anns)
+            self._canvas.set_conflict_pairs(
+                [(ex.id, pred.id) for ex, pred in conflicts])
+
         self._push_undo()
         self._sync_annotations_to_panel()
 

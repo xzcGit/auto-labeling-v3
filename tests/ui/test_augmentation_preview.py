@@ -23,15 +23,14 @@ class TestAugmentationPreviewDialog:
         assert dlg.windowTitle() == "数据增强预览"
 
     def test_apply_augmentation_returns_image(self, qapp, tmp_path):
-        from src.ui.augmentation_preview import AugmentationPreviewDialog
+        from src.ui.augmentation_preview import _apply_augmentation
 
         img = tmp_path / "test.png"
         _make_test_image(img)
         params = {"fliplr": 1.0, "hsv_h": 0, "hsv_s": 0, "hsv_v": 0,
                   "degrees": 0, "flipud": 0}
-        dlg = AugmentationPreviewDialog(img, params)
         original = QImage(str(img))
-        result = dlg._apply_augmentation(original)
+        result = _apply_augmentation(original, params)
         assert not result.isNull()
         assert result.width() > 0
 
@@ -43,15 +42,14 @@ class TestAugmentationPreviewDialog:
         assert dlg is not None
 
     def test_zero_params_returns_copy(self, qapp, tmp_path):
-        from src.ui.augmentation_preview import AugmentationPreviewDialog
+        from src.ui.augmentation_preview import _apply_augmentation
 
         img = tmp_path / "test.png"
         _make_test_image(img)
         params = {"hsv_h": 0, "hsv_s": 0, "hsv_v": 0, "fliplr": 0,
                   "flipud": 0, "degrees": 0}
-        dlg = AugmentationPreviewDialog(img, params)
         original = QImage(str(img))
-        result = dlg._apply_augmentation(original)
+        result = _apply_augmentation(original, params)
         assert result.size() == original.size()
 
 

@@ -306,6 +306,137 @@ class ClassManagerDialog(QDialog):
         return list(self._classes)
 
 
+class ImportDialog(QDialog):
+    """Dialog for importing annotations from external formats."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("导入标注")
+        self.setMinimumWidth(450)
+        self._init_ui()
+
+    def _init_ui(self) -> None:
+        layout = QVBoxLayout(self)
+
+        form = QFormLayout()
+
+        # Format selector
+        self._format_combo = QComboBox()
+        from src.core.formats import get_import_registry
+        self._import_registry = get_import_registry()
+        for info in self._import_registry.list_info():
+            self._format_combo.addItem(info.label, info.name)
+        self._format_combo.currentIndexChanged.connect(self._on_format_changed)
+        form.addRow("导入格式:", self._format_combo)
+
+        # Path selector
+        path_layout = QHBoxLayout()
+        self._path_edit = QLineEdit()
+        self._path_edit.setPlaceholderText("选择标注文件或目录")
+        path_layout.addWidget(self._path_edit)
+        self._btn_browse = QPushButton("浏览...")
+        self._btn_browse.clicked.connect(self._browse_path)
+        path_layout.addWidget(self._btn_browse)
+        form.addRow("标注路径:", path_layout)
+
+        # Conflict mode
+        self._conflict_combo = QComboBox()
+        self._conflict_combo.addItem("跳过已有标注", "skip")
+        self._conflict_combo.addItem("覆盖已有标注", "overwrite")
+        self._conflict_combo.addItem("合并（追加）", "merge")
+        form.addRow("冲突处理:", self._conflict_combo)
+
+        layout.addLayout(form)
+
+        # Help text
+        self._help_label = QLabel("")
+        self._help_label.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        self._help_label.setWordWrap(True)
+        layout.addWidget(self._help_label)
+        self._on_format_changed()
+
+        # Validation error label
+        self._error_label = QLabel("")
+        self._error_label.setStyleSheet(_ERROR_STYLE)
+        layout.addWidget(self._error_label)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _on_format_changed(self) -> None:
+        name = self._format_combo.currentData()
+        info = self._import_registry.get(name)
+        if not info:
+            return
+        if info.input_is_file:
+            self._path_edit.setPlaceholderText("选择标注 JSON 文件")
+            self._help_label.setText("COCO: 选择包含标注信息的 JSON 文件")
+        elif name == "YOLO":
+            self._path_edit.setPlaceholderText("选择包含 txt 标注的目录")
+            self._help_label.setText(
+                "YOLO: 选择包含 .txt 标注文件的目录。"
+                "自动识别检测/关键点格式。"
+                "若目录或上级目录有 data.yaml 会自动读取类别名。"
+            )
+        else:
+            self._path_edit.setPlaceholderText("选择包含 JSON 标注的目录")
+            self._help_label.setText("labelme: 选择包含 .json 标注文件的目录")
+        self._path_edit.clear()
+
+    def _browse_path(self) -> None:
+        name = self._format_combo.currentData()
+        info = self._import_registry.get(name)
+        if not info:
+            return
+        if info.input_is_file:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "选择标注文件", "",
+                info.file_filter or "所有文件 (*)",
+            )
+        else:
+            path = QFileDialog.getExistingDirectory(self, "选择标注目录")
+        if path:
+            self._path_edit.setText(path)
+
+    def _validate_and_accept(self) -> None:
+        path = self._path_edit.text().strip()
+        if not path:
+            self._error_label.setText("请选择标注路径")
+            self._path_edit.setFocus()
+            return
+
+        name = self._format_combo.currentData()
+        info = self._import_registry.get(name)
+        if not info:
+            return
+
+        p = Path(path)
+        if info.input_is_file:
+            if not p.is_file():
+                self._error_label.setText("文件不存在")
+                self._path_edit.setFocus()
+                return
+        else:
+            if not p.is_dir():
+                self._error_label.setText("目录不存在")
+                self._path_edit.setFocus()
+                return
+
+        self._error_label.setText("")
+        self.accept()
+
+    def get_values(self) -> tuple[str, str, str]:
+        """Return (format_name, path, conflict_mode)."""
+        return (
+            self._format_combo.currentData(),
+            self._path_edit.text().strip(),
+            self._conflict_combo.currentData(),
+        )
+
+
 class BatchProgressDialog(QDialog):
     """Progress dialog for batch operations with cancel support."""
 

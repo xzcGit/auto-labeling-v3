@@ -63,11 +63,12 @@ class TestTrainer:
         trainer = Trainer(yolo_cls=mock_yolo_cls)
         trainer.train(cfg)
 
-        mock_yolo_cls.assert_called_once_with("yolov8n.pt")
+        mock_yolo_cls.assert_called_once_with("yolov8n.pt", task="detect")
         mock_model.train.assert_called_once()
         train_kwargs = mock_model.train.call_args[1]
         assert train_kwargs["data"] == "/data.yaml"
         assert train_kwargs["epochs"] == 10
+        assert train_kwargs["task"] == "detect"
 
     def test_train_with_callback(self):
         mock_yolo_cls = MagicMock()

@@ -14,7 +14,21 @@ class TestAnnotationPanel:
             Annotation(class_name="dog", class_id=1, bbox=(0.2, 0.3, 0.1, 0.2)),
         ]
         panel.set_annotations(anns)
-        assert panel._ann_list.count() == 2
+        assert panel._ann_tree.topLevelItemCount() == 2
+
+    def test_set_annotations_with_keypoints(self, qapp):
+        from src.ui.properties import AnnotationPanel
+        from src.core.annotation import Annotation, Keypoint
+
+        panel = AnnotationPanel()
+        kps = [Keypoint(x=0.1, y=0.2, visible=2, label="nose"),
+               Keypoint(x=0.3, y=0.4, visible=1, label="eye")]
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), keypoints=kps)
+        panel.set_annotations([ann])
+        assert panel._ann_tree.topLevelItemCount() == 1
+        top = panel._ann_tree.topLevelItem(0)
+        assert top.childCount() == 2
+        assert top.isExpanded()
 
     def test_clear(self, qapp):
         from src.ui.properties import AnnotationPanel
@@ -24,7 +38,7 @@ class TestAnnotationPanel:
         ann = Annotation(class_name="cat", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4))
         panel.set_annotations([ann])
         panel.clear()
-        assert panel._ann_list.count() == 0
+        assert panel._ann_tree.topLevelItemCount() == 0
 
     def test_select_annotation_shows_properties(self, qapp):
         from src.ui.properties import AnnotationPanel
@@ -34,7 +48,6 @@ class TestAnnotationPanel:
         ann = Annotation(class_name="cat", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), confidence=0.95)
         panel.set_annotations([ann])
         panel.select_annotation(ann.id)
-        # Properties should show the selected annotation's info
         assert "cat" in panel._class_label.text()
 
     def test_select_none_clears_properties(self, qapp):
@@ -47,6 +60,18 @@ class TestAnnotationPanel:
         panel.select_annotation(ann.id)
         panel.select_annotation(None)
         assert panel._class_label.text() == ""
+
+    def test_select_keypoint_shows_properties(self, qapp):
+        from src.ui.properties import AnnotationPanel
+        from src.core.annotation import Annotation, Keypoint
+
+        panel = AnnotationPanel()
+        kp = Keypoint(x=0.1, y=0.2, visible=2, label="nose")
+        ann = Annotation(class_name="person", class_id=0, bbox=(0.5, 0.5, 0.3, 0.4), keypoints=[kp])
+        panel.set_annotations([ann])
+        panel.select_keypoint(ann.id, 0)
+        assert "nose" in panel._class_label.text()
+        assert "person" in panel._conf_label.text()
 
     def test_set_image_tags(self, qapp):
         from src.ui.properties import AnnotationPanel
