@@ -194,3 +194,15 @@ class TestFileListWidget:
         widget.set_class_filter("cat")
         visible = [i for i in range(widget.count()) if not widget.item(i).isHidden()]
         assert len(visible) == 1  # only img0
+
+    def test_get_paths_returns_copy(self, qapp):
+        from src.ui.file_list import FileListWidget
+
+        widget = FileListWidget()
+        paths = [Path("/imgs/a.jpg"), Path("/imgs/b.jpg"), Path("/imgs/c.jpg")]
+        widget.set_image_paths(paths)
+
+        got = widget.get_paths()
+        assert got == paths
+        got.append(Path("/imgs/x.jpg"))
+        assert widget.get_paths() == paths

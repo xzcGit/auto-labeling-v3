@@ -189,6 +189,10 @@ class FileListWidget(QListWidget):
                     self.setCurrentRow(i)
                     break
 
+    def get_paths(self) -> list[Path]:
+        """Return a copy of the current image paths list."""
+        return list(self._paths)
+
     def _on_row_changed(self, row: int) -> None:
         if row >= 0:
             path = self.get_current_path()
