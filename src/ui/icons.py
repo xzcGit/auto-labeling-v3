@@ -140,6 +140,15 @@ _SVGS: dict[str, str] = {
         '<polyline points="17 21 17 13 7 13 7 21"/>'
         '<polyline points="7 3 7 8 15 8"/></svg>'
     ),
+    # Refresh
+    "refresh": (
+        '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2"'
+        ' stroke-linecap="round" stroke-linejoin="round">'
+        '<polyline points="23 4 23 10 17 10"/>'
+        '<polyline points="1 20 1 14 7 14"/>'
+        '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/>'
+        '<path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>'
+    ),
     # Tabs
     "welcome": (
         '<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2"'
