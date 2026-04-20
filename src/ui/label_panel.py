@@ -767,6 +767,21 @@ class LabelPanel(QWidget):
         """Save current work before closing."""
         self._save_current()
 
+    def rescan_images(self) -> int:
+        """Re-scan project image dir; refresh list only if new files found.
+
+        Returns:
+            Number of newly discovered images (0 if none or no project).
+        """
+        if not self._project:
+            return 0
+        current = {str(p) for p in self._file_list.get_paths()}
+        latest = self._project.list_images()
+        added = len({str(p) for p in latest} - current)
+        if added:
+            self._file_list.refresh_paths(latest)
+        return added
+
     def _on_images_dropped(self, paths: list[Path]) -> None:
         """Handle image files dropped onto the file list."""
         if not self._project:

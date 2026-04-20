@@ -62,3 +62,34 @@ class TestLabelPanel:
         assert panel._btn_select is not None
         assert panel._btn_bbox is not None
         assert panel._btn_keypoint is not None
+
+    def test_rescan_images_finds_new_files(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+
+        pm = _make_test_project(tmp_path)
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        panel.set_project(pm)
+        assert panel._file_list.count() == 3
+
+        img_dir = pm.project_dir / pm.config.image_dir
+        img = QImage(100, 80, QImage.Format_RGB32)
+        img.fill(QColor(Qt.green))
+        img.save(str(img_dir / "img_new.png"), "PNG")
+
+        added = panel.rescan_images()
+        assert added == 1
+        assert panel._file_list.count() == 4
+
+    def test_rescan_images_returns_zero_when_nothing_new(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+
+        pm = _make_test_project(tmp_path)
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        panel.set_project(pm)
+        assert panel.rescan_images() == 0
+
+    def test_rescan_images_returns_zero_when_no_project(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        assert panel.rescan_images() == 0
