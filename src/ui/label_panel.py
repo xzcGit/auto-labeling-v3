@@ -775,9 +775,7 @@ class LabelPanel(QWidget):
         elif key == Qt.Key_V and mod & Qt.ControlModifier:
             self._paste_annotation()
         elif key == Qt.Key_F5:
-            if self._project:
-                images = self._project.list_images()
-                self._file_list.refresh_paths(images)
+            self.rescan_images()
         elif key in (Qt.Key_Plus, Qt.Key_Equal) and mod & Qt.ControlModifier:
             self._canvas.zoom_in()
         elif key == Qt.Key_Minus and mod & Qt.ControlModifier:

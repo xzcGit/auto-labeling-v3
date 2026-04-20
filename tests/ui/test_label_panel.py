@@ -139,3 +139,22 @@ class TestLabelPanel:
         panel._refresh_btn.click()
 
         assert any("未发现新图片" in m for m in msgs)
+
+    def test_f5_triggers_rescan(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+        from PyQt5.QtCore import QEvent
+        from PyQt5.QtGui import QKeyEvent
+
+        pm = _make_test_project(tmp_path)
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        panel.set_project(pm)
+
+        img_dir = pm.project_dir / pm.config.image_dir
+        img = QImage(100, 80, QImage.Format_RGB32)
+        img.fill(QColor(Qt.magenta))
+        img.save(str(img_dir / "img_f5.png"), "PNG")
+
+        ev = QKeyEvent(QEvent.KeyPress, Qt.Key_F5, Qt.NoModifier)
+        panel.keyPressEvent(ev)
+
+        assert panel._file_list.count() == 4
