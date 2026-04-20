@@ -139,6 +139,17 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("就绪")
         self.statusBar().addPermanentWidget(self._status_label)
 
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index: int) -> None:
+        """Auto-rescan images when switching to the Label tab."""
+        if self._label_panel is None:
+            return
+        if self.tab_widget.widget(index) is self._label_panel:
+            n = self._label_panel.rescan_images()
+            if n > 0:
+                self._status_label.setText(f"发现 {n} 张新图片")
+
     def _setup_menus(self) -> None:
         mb = self.menuBar()
 

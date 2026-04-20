@@ -109,6 +109,61 @@ class TestMainWindow:
         data = json.loads(config_path.read_text())
         assert "window_geometry" in data
 
+    def test_tab_switch_to_label_triggers_rescan(self, qapp, tmp_path):
+        from src.app import MainWindow
+        from src.core.project import ProjectManager
+        from PyQt5.QtGui import QImage, QColor
+        from PyQt5.QtCore import Qt
+
+        pm = ProjectManager.create(tmp_path / "proj", "t", classes=["a"])
+        img_dir = pm.project_dir / pm.config.image_dir
+        for i in range(2):
+            img = QImage(40, 40, QImage.Format_RGB32)
+            img.fill(QColor(Qt.red))
+            img.save(str(img_dir / f"i{i}.png"), "PNG")
+
+        win = MainWindow(config_path=tmp_path / "config.json")
+        win.open_project(pm)
+        assert win._label_panel is not None
+        assert win._label_panel._file_list.count() == 2
+
+        img = QImage(40, 40, QImage.Format_RGB32)
+        img.fill(QColor(Qt.blue))
+        img.save(str(img_dir / "new.png"), "PNG")
+
+        welcome_idx = win.tab_widget.indexOf(win._welcome)
+        label_idx = win.tab_widget.indexOf(win._label_panel)
+        win.tab_widget.setCurrentIndex(welcome_idx)
+        win.tab_widget.setCurrentIndex(label_idx)
+
+        assert win._label_panel._file_list.count() == 3
+        assert "发现 1 张新图片" in win._status_label.text()
+        win.close()
+
+    def test_tab_switch_to_label_no_message_when_nothing_new(self, qapp, tmp_path):
+        from src.app import MainWindow
+        from src.core.project import ProjectManager
+        from PyQt5.QtGui import QImage, QColor
+        from PyQt5.QtCore import Qt
+
+        pm = ProjectManager.create(tmp_path / "proj", "t", classes=["a"])
+        img_dir = pm.project_dir / pm.config.image_dir
+        img = QImage(40, 40, QImage.Format_RGB32)
+        img.fill(QColor(Qt.red))
+        img.save(str(img_dir / "i0.png"), "PNG")
+
+        win = MainWindow(config_path=tmp_path / "config.json")
+        win.open_project(pm)
+        win._status_label.setText("sentinel")
+
+        welcome_idx = win.tab_widget.indexOf(win._welcome)
+        label_idx = win.tab_widget.indexOf(win._label_panel)
+        win.tab_widget.setCurrentIndex(welcome_idx)
+        win.tab_widget.setCurrentIndex(label_idx)
+
+        assert win._status_label.text() == "sentinel"
+        win.close()
+
     def test_controllers_initialized(self, qapp, tmp_path):
         from src.app import MainWindow
 
