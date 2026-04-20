@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QPushButton,
     QToolBar,
+    QToolButton,
     QLabel,
     QComboBox,
     QAction,
@@ -147,8 +148,30 @@ class LabelPanel(QWidget):
         self._splitter = QSplitter(Qt.Horizontal)
 
         self._file_list = FileListWidget()
-        self._file_list.setMaximumWidth(250)
-        self._splitter.addWidget(self._file_list)
+
+        # Left pane: refresh toolbar + file list
+        left_pane = QWidget()
+        left_layout = QVBoxLayout(left_pane)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(2)
+
+        file_toolbar = QWidget()
+        tb_layout = QHBoxLayout(file_toolbar)
+        tb_layout.setContentsMargins(4, 2, 4, 2)
+        tb_layout.setSpacing(4)
+        self._refresh_btn = QToolButton()
+        self._refresh_btn.setIcon(icon("refresh"))
+        self._refresh_btn.setToolTip("刷新图像列表 (F5)")
+        self._refresh_btn.setEnabled(False)
+        self._refresh_btn.clicked.connect(self._on_refresh_clicked)
+        tb_layout.addWidget(self._refresh_btn)
+        tb_layout.addStretch(1)
+
+        left_layout.addWidget(file_toolbar)
+        left_layout.addWidget(self._file_list, 1)
+        left_pane.setMaximumWidth(250)
+
+        self._splitter.addWidget(left_pane)
 
         self._canvas = AnnotationCanvas()
         self._splitter.addWidget(self._canvas)
@@ -258,6 +281,7 @@ class LabelPanel(QWidget):
 
         logger.info("Project loaded: %s (%d images)", project.config.name, len(images))
         self._init_stats_cache()
+        self._refresh_btn.setEnabled(True)
 
     # ── Tool management ────────────────────────────────────────
 
@@ -781,6 +805,14 @@ class LabelPanel(QWidget):
         if added:
             self._file_list.refresh_paths(latest)
         return added
+
+    def _on_refresh_clicked(self) -> None:
+        """Handler for the refresh button in the file toolbar."""
+        n = self.rescan_images()
+        if n > 0:
+            self.status_changed.emit(f"发现 {n} 张新图片")
+        else:
+            self.status_changed.emit("未发现新图片")
 
     def _on_images_dropped(self, paths: list[Path]) -> None:
         """Handle image files dropped onto the file list."""

@@ -93,3 +93,49 @@ class TestLabelPanel:
 
         panel = LabelPanel(config_path=tmp_path / "config.json")
         assert panel.rescan_images() == 0
+
+    def test_refresh_button_disabled_initially(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        assert panel._refresh_btn.isEnabled() is False
+
+    def test_refresh_button_enabled_after_set_project(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+
+        pm = _make_test_project(tmp_path)
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        panel.set_project(pm)
+        assert panel._refresh_btn.isEnabled() is True
+
+    def test_refresh_button_click_finds_new_images(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+
+        pm = _make_test_project(tmp_path)
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        msgs: list[str] = []
+        panel.status_changed.connect(msgs.append)
+        panel.set_project(pm)
+
+        img_dir = pm.project_dir / pm.config.image_dir
+        img = QImage(100, 80, QImage.Format_RGB32)
+        img.fill(QColor(Qt.green))
+        img.save(str(img_dir / "img_new.png"), "PNG")
+
+        panel._refresh_btn.click()
+
+        assert panel._file_list.count() == 4
+        assert any("发现 1 张新图片" in m for m in msgs)
+
+    def test_refresh_button_click_zero_message(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+
+        pm = _make_test_project(tmp_path)
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        msgs: list[str] = []
+        panel.status_changed.connect(msgs.append)
+        panel.set_project(pm)
+
+        panel._refresh_btn.click()
+
+        assert any("未发现新图片" in m for m in msgs)
