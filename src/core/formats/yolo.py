@@ -8,6 +8,52 @@ import yaml
 from src.core.annotation import Annotation, ImageAnnotation, Keypoint
 
 
+def _iter_label_files(labels_dir: Path) -> list[Path]:
+    """Return YOLO label files, excluding auxiliary metadata files."""
+    return [
+        txt_path
+        for txt_path in sorted(labels_dir.glob("*.txt"))
+        if txt_path.name.lower() != "classes.txt"
+    ]
+
+
+def _find_classes_txt(labels_dir: Path) -> Path | None:
+    """Search for classes.txt in the given dir or its parent."""
+    for candidate in [
+        labels_dir / "classes.txt",
+        labels_dir.parent / "classes.txt",
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_classes_txt(classes_txt: Path | str) -> list[str]:
+    """Read class names from a YOLO classes.txt file."""
+    return [
+        line.strip()
+        for line in Path(classes_txt).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _parse_detection_fields(line: str, txt_path: Path, line_no: int) -> tuple[int, float, float, float, float]:
+    """Parse the leading YOLO detection fields with context-rich errors."""
+    parts = line.split()
+    if len(parts) < 5:
+        raise ValueError(f"{txt_path.name}:{line_no}: expected at least 5 fields, got {len(parts)}")
+    try:
+        return (
+            int(parts[0]),
+            float(parts[1]),
+            float(parts[2]),
+            float(parts[3]),
+            float(parts[4]),
+        )
+    except ValueError as exc:
+        raise ValueError(f"{txt_path.name}:{line_no}: {exc}") from exc
+
+
 def export_yolo_detection(
     image_annotations: list[ImageAnnotation],
     output_dir: Path | str,
@@ -56,14 +102,12 @@ def import_yolo_detection(
         raise ValueError("Must provide classes or data_yaml")
 
     results = []
-    for txt_path in sorted(labels_dir.glob("*.txt")):
+    for txt_path in _iter_label_files(labels_dir):
         annotations = []
-        for line in txt_path.read_text(encoding="utf-8").strip().split("\n"):
+        for line_no, line in enumerate(txt_path.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
                 continue
-            parts = line.strip().split()
-            cid = int(parts[0])
-            cx, cy, w, h = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
+            cid, cx, cy, w, h = _parse_detection_fields(line.strip(), txt_path, line_no)
             annotations.append(Annotation(
                 class_name=classes[cid] if cid < len(classes) else str(cid),
                 class_id=cid,
@@ -122,22 +166,24 @@ def import_yolo_pose(
     num_kpts = len(kpt_labels)
 
     results = []
-    for txt_path in sorted(labels_dir.glob("*.txt")):
+    for txt_path in _iter_label_files(labels_dir):
         annotations = []
-        for line in txt_path.read_text(encoding="utf-8").strip().split("\n"):
+        for line_no, line in enumerate(txt_path.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
                 continue
             parts = line.strip().split()
-            cid = int(parts[0])
-            cx, cy, w, h = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
+            cid, cx, cy, w, h = _parse_detection_fields(line.strip(), txt_path, line_no)
             keypoints = []
             kp_start = 5
-            for i in range(num_kpts):
-                offset = kp_start + i * kpt_dim
-                kx = float(parts[offset])
-                ky = float(parts[offset + 1])
-                vis = int(float(parts[offset + 2])) if kpt_dim == 3 else 2
-                keypoints.append(Keypoint(x=kx, y=ky, visible=vis, label=kpt_labels[i]))
+            try:
+                for i in range(num_kpts):
+                    offset = kp_start + i * kpt_dim
+                    kx = float(parts[offset])
+                    ky = float(parts[offset + 1])
+                    vis = int(float(parts[offset + 2])) if kpt_dim == 3 else 2
+                    keypoints.append(Keypoint(x=kx, y=ky, visible=vis, label=kpt_labels[i]))
+            except (IndexError, ValueError) as exc:
+                raise ValueError(f"{txt_path.name}:{line_no}: {exc}") from exc
             annotations.append(Annotation(
                 class_name=classes[cid] if cid < len(classes) else str(cid),
                 class_id=cid,
@@ -171,7 +217,7 @@ def _detect_yolo_format(labels_dir: Path) -> tuple[str, int]:
     Returns ("detection", 0) or ("pose", num_keypoints).
     For pose, assumes kpt_dim=3 (x, y, visibility).
     """
-    for txt_path in sorted(labels_dir.glob("*.txt")):
+    for txt_path in _iter_label_files(labels_dir):
         text = txt_path.read_text(encoding="utf-8").strip()
         if not text:
             continue
@@ -210,8 +256,13 @@ def import_yolo_auto(
         data_yaml = _find_data_yaml(labels_dir)
 
     if classes is None and data_yaml is not None:
-        data = yaml.safe_load(Path(data_yaml).read_text(encoding="utf-8"))
+        data = yaml.safe_load(Path(data_yaml).read_text(encoding="utf-8")) or {}
         classes = data.get("names")
+
+    if classes is None:
+        classes_txt = _find_classes_txt(labels_dir)
+        if classes_txt is not None:
+            classes = _load_classes_txt(classes_txt)
 
     # Detect format
     fmt, num_kpts = _detect_yolo_format(labels_dir)
@@ -232,11 +283,15 @@ def import_yolo_auto(
 def _infer_classes_from_files(labels_dir: Path) -> list[str]:
     """Scan all txt files to find max class_id and generate numeric class names."""
     max_id = -1
-    for txt_path in labels_dir.glob("*.txt"):
-        for line in txt_path.read_text(encoding="utf-8").strip().split("\n"):
+    for txt_path in _iter_label_files(labels_dir):
+        for line_no, line in enumerate(txt_path.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
                 continue
-            cid = int(line.strip().split()[0])
+            parts = line.strip().split()
+            try:
+                cid = int(parts[0])
+            except ValueError as exc:
+                raise ValueError(f"{txt_path.name}:{line_no}: {exc}") from exc
             if cid > max_id:
                 max_id = cid
     if max_id < 0:

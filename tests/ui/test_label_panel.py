@@ -158,3 +158,38 @@ class TestLabelPanel:
         panel.keyPressEvent(ev)
 
         assert panel._file_list.count() == 4
+
+    def test_rescan_images_updates_project_stats_total_images(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+
+        pm = _make_test_project(tmp_path)
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        panel.set_project(pm)
+        assert panel._ann_panel._project_total_label.text() == "总图片: 3"
+
+        img_dir = pm.project_dir / pm.config.image_dir
+        img = QImage(100, 80, QImage.Format_RGB32)
+        img.fill(QColor(Qt.yellow))
+        img.save(str(img_dir / "img_new.png"), "PNG")
+
+        panel.rescan_images()
+
+        assert panel._ann_panel._project_total_label.text() == "总图片: 4"
+
+    def test_dropped_images_update_project_stats_total_images(self, qapp, tmp_path):
+        from src.ui.label_panel import LabelPanel
+
+        pm = _make_test_project(tmp_path)
+        panel = LabelPanel(config_path=tmp_path / "config.json")
+        panel.set_project(pm)
+        assert panel._ann_panel._project_total_label.text() == "总图片: 3"
+
+        external = tmp_path / "external.png"
+        img = QImage(100, 80, QImage.Format_RGB32)
+        img.fill(QColor(Qt.green))
+        img.save(str(external), "PNG")
+
+        panel._on_images_dropped([external])
+
+        assert panel._file_list.count() == 4
+        assert panel._ann_panel._project_total_label.text() == "总图片: 4"

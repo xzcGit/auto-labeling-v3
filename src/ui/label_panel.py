@@ -801,8 +801,13 @@ class LabelPanel(QWidget):
         latest = self._project.list_images()
         added = len({str(p) for p in latest} - current)
         if added:
-            self._file_list.refresh_paths(latest)
+            self._refresh_image_list(latest)
         return added
+
+    def _refresh_image_list(self, images: list[Path]) -> None:
+        """Refresh the file list and recompute project-level stats."""
+        self._file_list.refresh_paths(images)
+        self._update_project_stats()
 
     def _on_refresh_clicked(self) -> None:
         """Handler for the refresh button in the file toolbar."""
@@ -826,7 +831,7 @@ class LabelPanel(QWidget):
                 added += 1
         if added > 0:
             images = self._project.list_images()
-            self._file_list.refresh_paths(images)
+            self._refresh_image_list(images)
             self.status_changed.emit(f"已导入 {added} 张图片")
 
     def get_current_image_path(self) -> Path | None:

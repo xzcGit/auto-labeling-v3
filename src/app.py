@@ -83,12 +83,16 @@ class WelcomePage(QWidget):
 
         self.recent_list = QListWidget()
         self.recent_list.setMaximumHeight(200)
-        for project_path in self._config.recent_projects:
-            item = QListWidgetItem(project_path)
-            self.recent_list.addItem(item)
+        self.refresh_recent_projects()
         layout.addWidget(self.recent_list)
 
         layout.addStretch()
+
+    def refresh_recent_projects(self) -> None:
+        """Refresh the recent project list from app config."""
+        self.recent_list.clear()
+        for project_path in self._config.recent_projects:
+            self.recent_list.addItem(QListWidgetItem(project_path))
 
 
 class MainWindow(QMainWindow):
@@ -136,8 +140,11 @@ class MainWindow(QMainWindow):
 
         self._setup_menus()
 
+        self._project_dir_label = QLabel()
+        self.statusBar().addWidget(self._project_dir_label, 1)
         self._status_label = QLabel("就绪")
         self.statusBar().addPermanentWidget(self._status_label)
+        self._set_project_dir_label(None)
 
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
 
@@ -190,12 +197,25 @@ class MainWindow(QMainWindow):
         classes_action.triggered.connect(self._on_class_manager)
         edit_menu.addAction(classes_action)
 
+    def _set_project_dir_label(self, project_dir: Path | None) -> None:
+        """Update the status bar label for the current project directory."""
+        if project_dir is None:
+            text = "项目目录: 未打开项目"
+            tooltip = text
+        else:
+            tooltip = str(project_dir)
+            text = f"项目目录: {tooltip}"
+        self._project_dir_label.setText(text)
+        self._project_dir_label.setToolTip(tooltip)
+
     # ── Project ──────────────────────────────────────────────
 
     def open_project(self, project_manager: ProjectManager) -> None:
         """Open a project and switch to labeling workspace."""
         self._project = project_manager
         self.setWindowTitle(f"AutoLabel V3 — {project_manager.config.name}")
+        self._set_project_dir_label(project_manager.project_dir)
+        self._welcome.refresh_recent_projects()
 
         self._model_registry = ModelRegistry(project_manager.project_dir / "models")
         self._model_registry.load()

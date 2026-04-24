@@ -164,6 +164,39 @@ class TestMainWindow:
         assert win._status_label.text() == "sentinel"
         win.close()
 
+    def test_new_project_refreshes_welcome_recent_list(self, qapp, tmp_path, monkeypatch):
+        from src.app import MainWindow
+        from src.core.project import ProjectManager
+
+        pm = ProjectManager.create(tmp_path / "proj", "test_proj", classes=["cat"])
+        win = MainWindow(config_path=tmp_path / "config.json")
+        assert win._welcome.recent_list.count() == 0
+
+        def fake_create_project():
+            win._app_config.add_recent_project(str(pm.project_dir))
+            return pm
+
+        monkeypatch.setattr(win._project_ctrl, "create_project", fake_create_project)
+
+        win._on_new_project()
+
+        assert win._welcome.recent_list.count() == 1
+        assert win._welcome.recent_list.item(0).text() == str(pm.project_dir)
+        win.close()
+
+    def test_open_project_shows_project_dir_in_status_bar_left(self, qapp, tmp_path):
+        from src.app import MainWindow
+        from src.core.project import ProjectManager
+
+        pm = ProjectManager.create(tmp_path / "proj", "test_proj", classes=["cat"])
+        win = MainWindow(config_path=tmp_path / "config.json")
+
+        win.open_project(pm)
+
+        assert str(pm.project_dir) in win._project_dir_label.text()
+        assert win._project_dir_label.toolTip() == str(pm.project_dir)
+        win.close()
+
     def test_controllers_initialized(self, qapp, tmp_path):
         from src.app import MainWindow
 

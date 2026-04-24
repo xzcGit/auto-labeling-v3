@@ -1,6 +1,7 @@
 """Integration tests for annotation import workflow."""
 import json
 
+import pytest
 import yaml
 from pathlib import Path
 
@@ -324,3 +325,23 @@ class TestYoloAutoImport:
         labels_dir.mkdir()
         results = import_yolo_auto(labels_dir, classes=["a"])
         assert results == []
+
+    def test_classes_txt_is_ignored_as_label_file_and_used_for_names(self, tmp_path):
+        labels_dir = tmp_path / "labels"
+        labels_dir.mkdir()
+        (labels_dir / "classes.txt").write_text("cat\ndog\n", encoding="utf-8")
+        (labels_dir / "img.txt").write_text("1 0.5 0.5 0.1 0.1\n", encoding="utf-8")
+
+        results = import_yolo_auto(labels_dir)
+
+        assert len(results) == 1
+        assert results[0].image_path == "img"
+        assert results[0].annotations[0].class_name == "dog"
+
+    def test_invalid_yolo_line_reports_file_and_line(self, tmp_path):
+        labels_dir = tmp_path / "labels"
+        labels_dir.mkdir()
+        (labels_dir / "bad.txt").write_text("oops\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match=r"bad\.txt:1"):
+            import_yolo_auto(labels_dir, classes=["cat"])
