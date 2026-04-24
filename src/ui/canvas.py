@@ -505,8 +505,12 @@ class AnnotationCanvas(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         px, py = event.x(), event.y()
 
-        # Middle button → pan
-        if event.button() == Qt.MiddleButton:
+        # Middle button, or Ctrl + Left button → pan
+        ctrl_left = (
+            event.button() == Qt.LeftButton
+            and event.modifiers() & Qt.ControlModifier
+        )
+        if event.button() == Qt.MiddleButton or ctrl_left:
             self._panning = True
             self._pan_start = (px, py)
             self.setCursor(Qt.ClosedHandCursor)
@@ -591,6 +595,9 @@ class AnnotationCanvas(QWidget):
 
         # Cursor feedback in select mode
         if self.tool_mode == "select" and self._image is not None:
+            if event.modifiers() & Qt.ControlModifier:
+                self.setCursor(Qt.OpenHandCursor)
+                return
             handle = self._hit_test_handle(px, py)
             if handle:
                 if "tl" in handle or "br" in handle:
@@ -603,11 +610,17 @@ class AnnotationCanvas(QWidget):
                 self.setCursor(Qt.SizeAllCursor)
             else:
                 self.setCursor(Qt.ArrowCursor)
+        elif self._image is not None:
+            # Draw modes: Ctrl signals pan availability, otherwise crosshair
+            if event.modifiers() & Qt.ControlModifier:
+                self.setCursor(Qt.OpenHandCursor)
+            else:
+                self.setCursor(Qt.CrossCursor)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         px, py = event.x(), event.y()
 
-        if event.button() == Qt.MiddleButton and self._panning:
+        if self._panning and event.button() in (Qt.MiddleButton, Qt.LeftButton):
             self._panning = False
             self._pan_start = None
             self.setCursor(Qt.ArrowCursor if self.tool_mode == "select" else Qt.CrossCursor)

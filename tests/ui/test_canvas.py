@@ -2,8 +2,8 @@
 from pathlib import Path
 
 import pytest
-from PyQt5.QtCore import Qt, QPointF
-from PyQt5.QtGui import QImage, QColor
+from PyQt5.QtCore import Qt, QPoint, QPointF, QEvent
+from PyQt5.QtGui import QImage, QColor, QMouseEvent
 
 
 def _make_test_image(path: Path, width: int = 200, height: int = 150) -> None:
@@ -424,3 +424,94 @@ class TestCanvasKeypointManagement:
         canvas.select_keypoint(ann.id, 0)
         canvas.select_annotation(ann.id)
         assert canvas._selected_kp_idx is None
+
+
+def _press(canvas, x, y, button=Qt.LeftButton, modifiers=Qt.NoModifier):
+    evt = QMouseEvent(QEvent.MouseButtonPress, QPointF(x, y), button, button, modifiers)
+    canvas.mousePressEvent(evt)
+
+
+def _move(canvas, x, y, buttons=Qt.NoButton, modifiers=Qt.NoModifier):
+    evt = QMouseEvent(QEvent.MouseMove, QPointF(x, y), Qt.NoButton, buttons, modifiers)
+    canvas.mouseMoveEvent(evt)
+
+
+def _release(canvas, x, y, button=Qt.LeftButton, modifiers=Qt.NoModifier):
+    evt = QMouseEvent(QEvent.MouseButtonRelease, QPointF(x, y), button, Qt.NoButton, modifiers)
+    canvas.mouseReleaseEvent(evt)
+
+
+class TestCtrlDragPan:
+    """Ctrl + left-button drag pans the canvas in all tool modes."""
+
+    def _make_canvas(self, qapp):
+        from src.ui.canvas import AnnotationCanvas
+
+        canvas = AnnotationCanvas()
+        canvas.resize(400, 300)
+        canvas._image_w = 200
+        canvas._image_h = 150
+        canvas._scale = 1.0
+        canvas._offset_x = 0.0
+        canvas._offset_y = 0.0
+        # Stub image so code paths requiring _image is not None activate
+        canvas._image = QImage(200, 150, QImage.Format_RGB32)
+        return canvas
+
+    def test_ctrl_left_press_enters_panning(self, qapp):
+        canvas = self._make_canvas(qapp)
+        _press(canvas, 100, 80, Qt.LeftButton, Qt.ControlModifier)
+        assert canvas._panning is True
+        assert canvas._pan_start == (100, 80)
+
+    def test_ctrl_left_drag_updates_offset(self, qapp):
+        canvas = self._make_canvas(qapp)
+        _press(canvas, 100, 80, Qt.LeftButton, Qt.ControlModifier)
+        _move(canvas, 140, 100, Qt.LeftButton, Qt.ControlModifier)
+        assert canvas._offset_x == 40.0
+        assert canvas._offset_y == 20.0
+        assert canvas._pan_start == (140, 100)
+
+    def test_left_release_ends_panning(self, qapp):
+        canvas = self._make_canvas(qapp)
+        _press(canvas, 100, 80, Qt.LeftButton, Qt.ControlModifier)
+        _release(canvas, 120, 90, Qt.LeftButton)
+        assert canvas._panning is False
+        assert canvas._pan_start is None
+
+    def test_ctrl_left_does_not_create_bbox_in_draw_mode(self, qapp):
+        canvas = self._make_canvas(qapp)
+        canvas.set_tool_mode("draw_bbox")
+        _press(canvas, 50, 50, Qt.LeftButton, Qt.ControlModifier)
+        assert canvas._panning is True
+        assert canvas._drawing is False
+        _release(canvas, 80, 80, Qt.LeftButton)
+        assert canvas._annotations == []
+
+    def test_ctrl_left_does_not_select_in_select_mode(self, qapp):
+        from src.core.annotation import Annotation
+
+        canvas = self._make_canvas(qapp)
+        ann = Annotation(class_name="a", class_id=0, bbox=(0.5, 0.5, 0.4, 0.4))
+        canvas.set_annotations([ann])
+        # Click inside the bbox with Ctrl — should pan, not select
+        _press(canvas, 100, 75, Qt.LeftButton, Qt.ControlModifier)
+        assert canvas._panning is True
+        assert canvas._selected_id is None
+
+    def test_plain_left_click_still_selects(self, qapp):
+        from src.core.annotation import Annotation
+
+        canvas = self._make_canvas(qapp)
+        ann = Annotation(class_name="a", class_id=0, bbox=(0.5, 0.5, 0.4, 0.4))
+        canvas.set_annotations([ann])
+        _press(canvas, 100, 75, Qt.LeftButton, Qt.NoModifier)
+        assert canvas._panning is False
+        assert canvas._selected_id == ann.id
+
+    def test_middle_button_pan_still_works(self, qapp):
+        canvas = self._make_canvas(qapp)
+        _press(canvas, 100, 80, Qt.MiddleButton)
+        assert canvas._panning is True
+        _release(canvas, 120, 90, Qt.MiddleButton)
+        assert canvas._panning is False
